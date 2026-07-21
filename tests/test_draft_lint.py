@@ -1,0 +1,551 @@
+import importlib
+import unittest
+
+
+class DraftLintContractTests(unittest.TestCase):
+    APPROVED_FIELDS = {
+        "release": (
+            (("actual_delivery", "actual delivery", "actual_delivery_date", "actual delivery date"), ("\u5b9e\u9645\u4ea4\u4ed8", "\u5b9e\u9645\u4ea4\u4ed8\u65e5\u671f")),
+            (("module",), ("\u6a21\u5757",)),
+            (("user_impact", "user impact"), ("\u7528\u6237\u5f71\u54cd",)),
+            (("scope",), ("\u8303\u56f4",)),
+            (("limitations",), ("\u9650\u5236",)),
+        ),
+        "engineering": (
+            (("change_scope", "change scope"), ("\u53d8\u66f4\u8303\u56f4",)),
+            (("dependencies_or_migration", "dependencies or migration"), ("\u4f9d\u8d56\u6216\u8fc1\u79fb",)),
+            (("verification",), ("\u9a8c\u8bc1",)),
+            (("risk",), ("\u98ce\u9669",)),
+            (("rollback_condition", "rollback condition"), ("\u56de\u6eda\u6761\u4ef6",)),
+        ),
+        "incident": (
+            (("status",), ("\u72b6\u6001",)),
+            (("severity",), ("\u4e25\u91cd\u7a0b\u5ea6", "\u4e25\u91cd\u7ea7\u522b")),
+            (("timezone", "time zone"), ("\u65f6\u533a",)),
+            (("impact",), ("\u5f71\u54cd",)),
+            (("timeline",), ("\u65f6\u95f4\u7ebf",)),
+            (("recovery",), ("\u6062\u590d",)),
+            (("root_cause_confidence", "root cause confidence"), ("\u6839\u56e0\u7f6e\u4fe1\u5ea6",)),
+        ),
+        "decision": (
+            (("context",), ("\u80cc\u666f",)),
+            (("options",), ("\u9009\u9879", "\u5019\u9009\u65b9\u6848")),
+            (("decision",), ("\u51b3\u7b56", "\u51b3\u5b9a")),
+            (("rationale",), ("\u7406\u7531",)),
+            (("tradeoffs", "trade-offs"), ("\u6743\u8861", "\u4ee3\u4ef7")),
+            (("review_condition", "review condition"), ("\u590d\u5ba1\u6761\u4ef6",)),
+        ),
+        "project": (
+            (("period",), ("\u5468\u671f", "\u671f\u95f4")),
+            (("overall_status", "overall status"), ("\u6574\u4f53\u72b6\u6001", "\u603b\u4f53\u72b6\u6001")),
+            (("progress",), ("\u8fdb\u5c55",)),
+            (("risks",), ("\u98ce\u9669",)),
+            (("decisions",), ("\u51b3\u7b56", "\u51b3\u5b9a")),
+            (("next_milestone", "next milestone"), ("\u4e0b\u4e00\u91cc\u7a0b\u7891",)),
+        ),
+        "audit": (
+            (("scope",), ("\u8303\u56f4",)),
+            (("period",), ("\u5468\u671f", "\u671f\u95f4")),
+            (("evidence",), ("\u8bc1\u636e",)),
+            (("findings",), ("\u53d1\u73b0",)),
+            (("risk",), ("\u98ce\u9669",)),
+            (("remediation_status", "remediation status"), ("\u6574\u6539\u72b6\u6001",)),
+        ),
+        "experiment": (
+            (("hypothesis",), ("\u5047\u8bbe",)),
+            (("sample",), ("\u6837\u672c",)),
+            (("metric_definition", "metric definition"), ("\u6307\u6807\u5b9a\u4e49",)),
+            (("results",), ("\u7ed3\u679c",)),
+            (("uncertainty",), ("\u4e0d\u786e\u5b9a\u6027",)),
+            (("conclusion",), ("\u7ed3\u8bba",)),
+        ),
+        "support": (
+            (("issue",), ("\u95ee\u9898",)),
+            (("customer_impact", "customer impact"), ("\u5ba2\u6237\u5f71\u54cd",)),
+            (("handling_or_result", "handling or result"), ("\u5904\u7406\u6216\u7ed3\u679c",)),
+            (("evidence",), ("\u8bc1\u636e",)),
+            (("status",), ("\u72b6\u6001",)),
+            (("follow_up", "follow-up", "follow up"), ("\u540e\u7eed",)),
+        ),
+    }
+    DATE_FIELDS = {
+        "release": (
+            ("actual_delivery_date", "published_at", "effective_at"),
+            ("\u5b9e\u9645\u4ea4\u4ed8\u65e5\u671f", "\u53d1\u5e03\u65f6\u95f4", "\u751f\u6548\u65f6\u95f4"),
+        ),
+        "engineering": (("occurred_at", "recorded_at"), ("\u53d1\u751f\u65f6\u95f4", "\u8bb0\u5f55\u65f6\u95f4")),
+        "incident": (("occurred_at",), ("\u53d1\u751f\u65f6\u95f4",)),
+        "decision": (("effective_at", "recorded_at"), ("\u751f\u6548\u65f6\u95f4", "\u8bb0\u5f55\u65f6\u95f4")),
+        "project": (("updated_at", "recorded_at"), ("\u66f4\u65b0\u65f6\u95f4", "\u8bb0\u5f55\u65f6\u95f4")),
+        "audit": (("recorded_at",), ("\u8bb0\u5f55\u65f6\u95f4",)),
+        "experiment": (("occurred_at", "recorded_at"), ("\u53d1\u751f\u65f6\u95f4", "\u8bb0\u5f55\u65f6\u95f4")),
+        "support": (("occurred_at", "updated_at"), ("\u53d1\u751f\u65f6\u95f4", "\u66f4\u65b0\u65f6\u95f4")),
+    }
+
+    def lint_module(self):
+        return importlib.import_module("scripts.lint_log_draft")
+
+    @staticmethod
+    def issue_codes(issues):
+        return {issue.code for issue in issues}
+
+    def complete_draft(
+        self,
+        log_type,
+        *,
+        language="english",
+        omitted_index=None,
+        aliases_by_index=None,
+        include_date=True,
+        date_alias=None,
+        date_value="2026-07-18T12:00:00+08:00",
+        include_timezone=True,
+        timezone_value="Asia/Shanghai",
+    ):
+        language_index = 0 if language == "english" else 1
+        fields = [aliases[language_index][0] for aliases in self.APPROVED_FIELDS[log_type]]
+        for index, alias in (aliases_by_index or {}).items():
+            fields[index] = alias
+        sections = [
+            (
+                field,
+                timezone_value
+                if log_type == "incident" and index == 2
+                else "Recorded.",
+            )
+            for index, field in enumerate(fields)
+            if index != omitted_index
+            and not (
+                log_type == "incident"
+                and index == 2
+                and not include_timezone
+            )
+        ]
+        if include_timezone and log_type != "incident":
+            sections.insert(
+                0,
+                ("timezone" if language == "english" else "\u65f6\u533a", timezone_value),
+            )
+        if include_date:
+            sections.insert(
+                0,
+                (
+                    date_alias or self.DATE_FIELDS[log_type][language_index][0],
+                    date_value,
+                ),
+            )
+        return "# Log\n\n" + "\n\n".join(
+            f"## {field}\n\n{value}" for field, value in sections
+        )
+
+    def complete_chinese_draft(self, log_type):
+        return self.complete_draft(log_type, language="chinese")
+
+    def test_declares_exactly_the_eight_supported_log_types(self):
+        lint = self.lint_module()
+
+        self.assertEqual(
+            {"audit", "decision", "engineering", "experiment", "incident", "project", "release", "support"},
+            set(lint.SUPPORTED_LOG_TYPES),
+        )
+
+    def test_accepts_a_complete_approved_english_template_for_every_log_type(self):
+        lint = self.lint_module()
+        for log_type in lint.SUPPORTED_LOG_TYPES:
+            with self.subTest(log_type=log_type):
+                self.assertEqual([], lint.lint_draft(self.complete_draft(log_type), log_type=log_type))
+
+    def test_each_log_type_requires_its_specific_planning_fields(self):
+        lint = self.lint_module()
+        for log_type in lint.SUPPORTED_LOG_TYPES:
+            with self.subTest(log_type=log_type):
+                issues = lint.lint_draft("# Log\n\nDate: 2026-07-18\nTimezone: UTC", log_type=log_type)
+                self.assertIn("missing_required_field", self.issue_codes(issues))
+
+    def test_accepts_a_complete_approved_chinese_template_for_every_log_type(self):
+        lint = self.lint_module()
+        for log_type in lint.SUPPORTED_LOG_TYPES:
+            with self.subTest(log_type=log_type):
+                self.assertEqual([], lint.lint_draft(self.complete_chinese_draft(log_type), log_type=log_type))
+
+    def test_release_accepts_actual_delivery_date_as_the_delivery_field(self):
+        lint = self.lint_module()
+        draft = self.complete_draft(
+            "release",
+            language="chinese",
+            aliases_by_index={0: "\u5b9e\u9645\u4ea4\u4ed8\u65e5\u671f"},
+        )
+
+        self.assertEqual([], lint.lint_draft(draft, log_type="release"))
+
+    def test_release_publication_time_does_not_replace_actual_delivery_date(self):
+        lint = self.lint_module()
+        draft = self.complete_draft(
+            "release",
+            omitted_index=0,
+            date_alias="published_at",
+        )
+
+        self.assertIn(
+            "missing_required_field",
+            self.issue_codes(lint.lint_draft(draft, log_type="release")),
+        )
+
+    def test_decision_and_project_accept_the_taxonomy_decision_label(self):
+        lint = self.lint_module()
+        for log_type, field_index in (("decision", 2), ("project", 4)):
+            with self.subTest(log_type=log_type):
+                draft = self.complete_draft(
+                    log_type,
+                    language="chinese",
+                    aliases_by_index={field_index: "决定"},
+                )
+                self.assertEqual([], lint.lint_draft(draft, log_type=log_type))
+
+    def test_accepts_every_approved_english_and_chinese_alias(self):
+        lint = self.lint_module()
+        for log_type, groups in self.APPROVED_FIELDS.items():
+            for field_index, language_aliases in enumerate(groups):
+                for language, aliases in zip(("english", "chinese"), language_aliases):
+                    for alias in aliases:
+                        with self.subTest(log_type=log_type, language=language, alias=alias):
+                            draft = self.complete_draft(
+                                log_type,
+                                language=language,
+                                aliases_by_index={field_index: alias},
+                            )
+                            self.assertEqual([], lint.lint_draft(draft, log_type=log_type))
+
+    def test_accepts_every_exact_type_specific_date_alias(self):
+        lint = self.lint_module()
+        for log_type, language_aliases in self.DATE_FIELDS.items():
+            for language, aliases in zip(("english", "chinese"), language_aliases):
+                for alias in aliases:
+                    with self.subTest(log_type=log_type, language=language, alias=alias):
+                        draft = self.complete_draft(log_type, language=language, date_alias=alias)
+                        self.assertEqual([], lint.lint_draft(draft, log_type=log_type))
+
+    def test_each_approved_semantic_field_is_required_in_english_and_chinese(self):
+        lint = self.lint_module()
+        for log_type, groups in self.APPROVED_FIELDS.items():
+            for language in ("english", "chinese"):
+                for omitted_index in range(len(groups)):
+                    with self.subTest(log_type=log_type, language=language, omitted_index=omitted_index):
+                        date_alias = None
+                        if log_type == "release" and omitted_index == 0:
+                            date_alias = "effective_at" if language == "english" else "\u751f\u6548\u65f6\u95f4"
+                        issues = lint.lint_draft(
+                            self.complete_draft(
+                                log_type,
+                                language=language,
+                                omitted_index=omitted_index,
+                                date_alias=date_alias,
+                            ),
+                            log_type=log_type,
+                        )
+                        self.assertIn("missing_required_field", self.issue_codes(issues))
+
+    def test_generic_date_does_not_replace_type_specific_applicable_time_semantics(self):
+        lint = self.lint_module()
+        for log_type in self.DATE_FIELDS:
+            with self.subTest(log_type=log_type):
+                draft = self.complete_draft(log_type, include_date=False) + "\n\n## Date\n\n2026-07-18"
+                codes = self.issue_codes(lint.lint_draft(draft, log_type=log_type))
+                self.assertNotIn("missing_required_field", codes)
+                self.assertIn("missing_date", codes)
+
+    def test_dates_and_timezones_require_values_not_just_labels(self):
+        lint = self.lint_module()
+        for log_type in self.DATE_FIELDS:
+            with self.subTest(log_type=log_type, field="date_nonsense"):
+                codes = self.issue_codes(
+                    lint.lint_draft(
+                        self.complete_draft(log_type, date_value="sometime later"),
+                        log_type=log_type,
+                    )
+                )
+                self.assertIn("invalid_date", codes)
+            with self.subTest(log_type=log_type, field="date_empty"):
+                codes = self.issue_codes(
+                    lint.lint_draft(
+                        self.complete_draft(log_type, date_value=""),
+                        log_type=log_type,
+                    )
+                )
+                self.assertIn("invalid_date", codes)
+            with self.subTest(log_type=log_type, field="timezone_invalid"):
+                codes = self.issue_codes(
+                    lint.lint_draft(
+                        self.complete_draft(
+                            log_type,
+                            timezone_value="Mars/Olympus_Mons",
+                        ),
+                        log_type=log_type,
+                    )
+                )
+                self.assertIn("invalid_timezone", codes)
+            with self.subTest(log_type=log_type, field="timezone_empty"):
+                codes = self.issue_codes(
+                    lint.lint_draft(
+                        self.complete_draft(log_type, timezone_value=""),
+                        log_type=log_type,
+                    )
+                )
+                self.assertIn("invalid_timezone", codes)
+            with self.subTest(log_type=log_type, field="timezone_missing"):
+                codes = self.issue_codes(
+                    lint.lint_draft(
+                        self.complete_draft(log_type, include_timezone=False),
+                        log_type=log_type,
+                    )
+                )
+                self.assertIn("missing_timezone", codes)
+
+    def test_iso_dates_and_explicit_unknown_date_values_are_accepted(self):
+        lint = self.lint_module()
+        for log_type in self.DATE_FIELDS:
+            for value in ("2026-07-18", "2026-07-18T12:00:00+08:00", "unknown"):
+                with self.subTest(log_type=log_type, value=value):
+                    issues = lint.lint_draft(
+                        self.complete_draft(log_type, date_value=value),
+                        log_type=log_type,
+                    )
+                    self.assertNotIn("invalid_date", self.issue_codes(issues))
+            with self.subTest(log_type=log_type, value="\u5f85\u786e\u8ba4"):
+                issues = lint.lint_draft(
+                    self.complete_draft(
+                        log_type,
+                        language="chinese",
+                        date_value="\u5f85\u786e\u8ba4",
+                    ),
+                    log_type=log_type,
+                )
+                self.assertNotIn("invalid_date", self.issue_codes(issues))
+
+    def test_inline_and_heading_metadata_values_are_both_supported(self):
+        lint = self.lint_module()
+        draft = self.complete_draft("release")
+        draft = draft.replace(
+            "## actual_delivery_date\n\n2026-07-18T12:00:00+08:00",
+            "actual_delivery_date: 2026-07-18",
+        ).replace(
+            "## timezone\n\nAsia/Shanghai",
+            "timezone: Asia/Shanghai",
+        )
+
+        self.assertEqual([], lint.lint_draft(draft, log_type="release"))
+
+    def test_reports_missing_applicable_date_and_timezone(self):
+        lint = self.lint_module()
+
+        issues = lint.lint_draft("# Incident\n\n## Summary\n\nService recovered.", log_type="incident")
+
+        self.assertTrue({"missing_date", "missing_timezone"} <= self.issue_codes(issues))
+
+    def test_reports_heading_level_jumps(self):
+        lint = self.lint_module()
+
+        issues = lint.lint_draft("# Project\n\n### Outcome\n\nRecorded.", log_type="project")
+
+        self.assertIn("heading_level_jump", self.issue_codes(issues))
+
+    def test_rejects_an_unsupported_log_type(self):
+        lint = self.lint_module()
+
+        with self.assertRaises(ValueError):
+            lint.lint_draft("# Weekly\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai", log_type="weekly")
+
+    def test_reports_status_that_is_expressed_by_color_only(self):
+        lint = self.lint_module()
+
+        issues = lint.lint_draft(
+            "# Engineering\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai\n\n"
+            "<span style=\"color:red\">\u25cf</span>",
+            log_type="engineering",
+        )
+
+        self.assertIn("color_only_status", self.issue_codes(issues))
+
+    def test_reports_customer_facing_internal_implementation_leakage(self):
+        lint = self.lint_module()
+
+        issues = lint.lint_draft(
+            "# Release\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai\n\n"
+            "Customer update: we changed the internal /admin/v2/rollout endpoint.",
+            log_type="release",
+        )
+
+        self.assertIn("internal_implementation_leak", self.issue_codes(issues))
+
+    def test_reports_unsupported_statistical_significance_claims(self):
+        lint = self.lint_module()
+
+        issues = lint.lint_draft(
+            "# Experiment\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai\n\n"
+            "The result is statistically significant.",
+            log_type="experiment",
+        )
+
+        self.assertIn("unsupported_significance_claim", self.issue_codes(issues))
+
+    def test_reports_obvious_secrets_and_images_without_text_fallback(self):
+        lint = self.lint_module()
+
+        issues = lint.lint_draft(
+            "# Project\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai\n\n"
+            "Token: sk-live-12345678901234567890\n\n![](chart.png)",
+            log_type="project",
+        )
+
+        self.assertTrue({"obvious_secret", "missing_visual_caption"} <= self.issue_codes(issues))
+
+    def test_reports_password_cookie_session_bearer_and_api_key_secrets(self):
+        lint = self.lint_module()
+        fragments = (
+            "pass" + "word: correct-horse-battery-staple",
+            "pass" + "word=x",
+            "coo" + "kie=session-cookie-value",
+            "coo" + "kie=id",
+            "sess" + "ion: private-session-value",
+            "sess" + "ion=x",
+            "Authorization: " + "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+            "api" + "_key=private-api-key-value",
+        )
+        for fragment in fragments:
+            with self.subTest(fragment=fragment):
+                issues = lint.lint_draft(self.complete_draft("engineering") + "\n\n" + fragment, log_type="engineering")
+                self.assertIn("obvious_secret", self.issue_codes(issues))
+
+    def test_reports_email_and_common_phone_as_possible_pii_in_text_and_images(self):
+        lint = self.lint_module()
+        fragments = (
+            "Contact person@example.com for details.",
+            "Call 13800138000 for escalation.",
+            "Call 138-0013-8000 for escalation.",
+            "Call +1 (415) 555-2671 for escalation.",
+            "Call +44 20 7946 0958 for escalation.",
+            "![Owner person@example.com](owner.png)",
+            "![Escalation contact](https://example.invalid/138-0013-8000.png)",
+        )
+        for fragment in fragments:
+            with self.subTest(fragment=fragment):
+                issues = lint.lint_draft(self.complete_draft("support") + "\n\n" + fragment, log_type="support")
+                self.assertIn("possible_pii", self.issue_codes(issues))
+
+    def test_ordinary_dates_do_not_trigger_possible_pii(self):
+        lint = self.lint_module()
+        draft = (
+            self.complete_draft("project")
+            + "\n\nPeriod: 2026-07-18 through 2026-07-20. "
+            + "Snapshot: 2026/07/18. Timestamp: 2026-07-18T12:00:00+08:00."
+        )
+        self.assertNotIn("possible_pii", self.issue_codes(lint.lint_draft(draft, log_type="project")))
+
+    def test_reports_silent_history_rewrite_language_for_sensitive_log_types(self):
+        lint = self.lint_module()
+
+        for log_type in ("incident", "audit", "decision"):
+            with self.subTest(log_type=log_type):
+                issues = lint.lint_draft(
+                    "# Record\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai\n\n"
+                    "We rewrote the earlier entry so the previous record is no longer visible.",
+                    log_type=log_type,
+                )
+                self.assertIn("silent_history_rewrite", self.issue_codes(issues))
+
+    def test_does_not_apply_silent_history_rewrite_rule_to_release_or_project_logs(self):
+        lint = self.lint_module()
+
+        for log_type in ("release", "project"):
+            with self.subTest(log_type=log_type):
+                issues = lint.lint_draft(
+                    "# Record\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai\n\n"
+                    "We rewrote the earlier entry so the previous record is no longer visible.",
+                    log_type=log_type,
+                )
+                self.assertNotIn("silent_history_rewrite", self.issue_codes(issues))
+
+    def test_recognizes_chinese_date_timezone_and_significance_claims(self):
+        lint = self.lint_module()
+        issues = lint.lint_draft(
+            "# 实验\n\n记录时间：2026-07-18\n\n## 假设\nA\n## 方法\nB\n## 结果\nC\n## 证据\nD\n## 限制\nE\n\n结果具有统计显著性。",
+            log_type="experiment",
+        )
+
+        codes = self.issue_codes(issues)
+        self.assertNotIn("missing_date", codes)
+        self.assertIn("unsupported_significance_claim", codes)
+
+    def test_reports_color_only_emoji_statuses_without_text(self):
+        lint = self.lint_module()
+        for emoji in ("\U0001f534", "\U0001f7e1", "\U0001f7e2"):
+            with self.subTest(emoji=emoji):
+                issues = lint.lint_draft(f"# Log\n\nDate: 2026-07-18\nTimezone: UTC\n\n{emoji}", log_type="engineering")
+                self.assertIn("color_only_status", self.issue_codes(issues))
+
+    def test_reports_html_image_without_alt_and_customer_implementation_terms(self):
+        lint = self.lint_module()
+        issues = lint.lint_draft(
+            "# Release\n\nDate: 2026-07-18\nTimezone: UTC\n\n"
+            "Customer update: MobileCategoryPanel uses Vitest and a SQL query. <img src=\"chart.png\">",
+            log_type="release",
+        )
+        self.assertTrue({"missing_visual_caption", "internal_implementation_leak"} <= self.issue_codes(issues))
+
+    def test_reports_chinese_significant_improvement_without_evidence(self):
+        lint = self.lint_module()
+        issues = lint.lint_draft("# 实验\n\n日期：2026-07-18\n时区：UTC\n\n结果显著提升。", log_type="experiment")
+        self.assertIn("unsupported_significance_claim", self.issue_codes(issues))
+
+    def test_reports_wide_tables_incomplete_chart_context_and_whiteboard_without_text_equivalent(self):
+        lint = self.lint_module()
+        issues = lint.lint_draft(
+            self.complete_draft("project") + "\n\n|a|b|c|d|e|f|g|\n|-|-|-|-|-|-|-|\n|1|2|3|4|5|6|7|\n\n"
+            "![Trend](chart.png)\n\nWhiteboard: [diagram](board-link)",
+            log_type="project",
+        )
+        self.assertTrue({"wide_table", "incomplete_visual_context", "missing_whiteboard_text"} <= self.issue_codes(issues))
+
+    def test_plain_image_does_not_require_chart_range_unit_or_source(self):
+        lint = self.lint_module()
+        for image in (
+            "![Team photo](photo.png)",
+            '<img alt="Team photo" src="photo.png">',
+        ):
+            with self.subTest(image=image):
+                issues = lint.lint_draft(
+                    self.complete_draft("project") + "\n\n" + image,
+                    log_type="project",
+                )
+                self.assertNotIn("incomplete_visual_context", self.issue_codes(issues))
+
+    def test_chart_detection_uses_markdown_alt_and_url_plus_html_alt_and_src(self):
+        lint = self.lint_module()
+        charts = (
+            "![Metrics](weekly-trend.png)",
+            "![Trend](metrics.png)",
+            '<img alt="Metrics" src="weekly-trend.png">',
+            '<img alt="Trend chart" src="metrics.png">',
+        )
+        for chart in charts:
+            with self.subTest(chart=chart):
+                issues = lint.lint_draft(
+                    self.complete_draft("project") + "\n\n" + chart,
+                    log_type="project",
+                )
+                self.assertIn(
+                    "incomplete_visual_context",
+                    self.issue_codes(issues),
+                )
+
+    def test_chinese_chart_and_whiteboard_require_context_and_equivalent_text(self):
+        lint = self.lint_module()
+        issues = lint.lint_draft(
+            self.complete_chinese_draft("project") + "\n\n![\u8d8b\u52bf\u56fe\u8868](chart.png)\n\n\u767d\u677f\uff1a[\u67b6\u6784](board-link)",
+            log_type="project",
+        )
+        self.assertTrue({"incomplete_visual_context", "missing_whiteboard_text"} <= self.issue_codes(issues))
+
+
+if __name__ == "__main__":
+    unittest.main()

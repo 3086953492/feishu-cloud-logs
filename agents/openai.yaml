@@ -1,0 +1,6 @@
+interface:
+  display_name: "飞书云日志"
+  short_description: "将技术与业务变化整理为专业、可验证的飞书云文档日志"
+  default_prompt: "Use $feishu-cloud-logs to draft or safely maintain a professional Feishu cloud-document log."
+policy:
+  allow_implicit_invocation: true

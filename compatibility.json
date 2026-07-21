@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "policy": "capability-gated",
+  "package": "@larksuite/cli",
+  "tested_versions": [
+    "1.0.72"
+  ],
+  "pinned_fallback": "@larksuite/cli@1.0.72",
+  "required_skills": [
+    "lark-shared",
+    "lark-doc",
+    "lark-wiki"
+  ],
+  "required_capabilities": [
+    "skills.read",
+    "docs.create.v2",
+    "docs.fetch.v2",
+    "docs.update.v2",
+    "wiki.resolve",
+    "risk.confirmation"
+  ]
+}
