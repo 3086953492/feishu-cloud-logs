@@ -42,9 +42,9 @@
 
 ## 私有文档记忆
 
-私有档案只保存文档的非敏感约定，例如受众、语言、时区、日期口径、排序、稳定标题、插入规则、保护区域和更正策略。它不得保存凭据、认证状态、个人信息、临时块标识、revision、所有者标识或原始接口返回。
+私有档案只保存文档的非敏感约定，例如受众、语言、时区、日期口径、排序、稳定标题、插入规则、保护区域和更正策略。`.local/trusted.json` 可另行保存按精确 profile、目标摘要、用户身份、日志类型、受众和普通追加操作收窄的授权记录。它不得保存凭据、认证状态、个人信息、临时块标识、revision、所有者标识或原始接口返回。
 
-只有用户明确要求“记住”或“更新文档档案”时才修改 `.local/`。普通日志写入不应顺便更新档案。别名只能产生候选；写入前仍须解析并核验实时规范目标。多个候选时必须停止并请求选择。
+只有用户明确要求“记住”“更新文档档案”“信任该文档”或“撤销信任”时才修改 `.local/`。普通日志写入不应顺便更新档案或信任标识。信任标识不创建写入意图；本轮明确写入、实时目标精确匹配（Wiki 同时核对节点与底层 Docx）且解析器返回受信普通追加时才免除重复确认。别名只能产生候选；多个候选时必须停止并请求选择。
 
 ## 验证
 
@@ -69,4 +69,4 @@ python scripts/validate_package.py --help
 
 ## English summary
 
-`feishu-cloud-logs` is a Chinese-first Codex skill for drafting and safely maintaining professional narrative logs in Feishu Docx or Wiki-backed Docx documents. It provides eight log taxonomies, audience-aware writing guidance, offline linting, private-profile isolation, optimistic-concurrency rules, idempotency checks, and read-after-write verification. Public packaging excludes `.local/`, uses fixture-only CI, and grants no license at this time.
+`feishu-cloud-logs` is a Chinese-first Codex skill for drafting and safely maintaining professional narrative logs in Feishu Docx or Wiki-backed Docx documents. It provides eight log taxonomies, audience-aware writing guidance, offline linting, scoped trusted-destination grants, private-profile isolation, optimistic-concurrency rules, idempotency checks, and read-after-write verification. Public packaging excludes `.local/`, uses fixture-only CI, and grants no license at this time.

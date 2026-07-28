@@ -2,11 +2,13 @@ import importlib
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 DOCUMENT_TOKEN = "dox" + "cnTestToken000000000"
 CANONICAL_URL = "https://example." + "feishu.cn/docx/" + DOCUMENT_TOKEN
+TARGET_FINGERPRINT = "sha256:fe923e43917571711a7a1e3b8850b7237df46343ed1c740a06e91f5b95137476"
 
 
 class PrivateMemoryContractTests(unittest.TestCase):
@@ -24,6 +26,29 @@ class PrivateMemoryContractTests(unittest.TestCase):
                 memory_file.write_text("# profile\n", encoding="utf-8")
         index.write_text(json.dumps({"version": 1, "profiles": entries}), encoding="utf-8")
         return index
+
+    def write_trust(self, root, grants):
+        trust = root / "trusted.json"
+        trust.write_text(
+            json.dumps({"version": 1, "grants": grants}),
+            encoding="utf-8",
+        )
+        return trust
+
+    def trust_grant(self, **overrides):
+        grant = {
+            "profile_id": "logs-default",
+            "target_fingerprint": TARGET_FINGERPRINT,
+            "identity": "user",
+            "operations": ["append", "block_insert_after"],
+            "log_types": ["engineering"],
+            "audiences": ["internal"],
+            "authorized_at": "2026-07-18T12:00:00+08:00",
+            "expires_at": None,
+            "revoked_at": None,
+        }
+        grant.update(overrides)
+        return grant
 
     def exact_entry(self, **overrides):
         entry = {
@@ -64,9 +89,276 @@ class PrivateMemoryContractTests(unittest.TestCase):
                 memory_root=root,
             )
 
-        self.assertTrue(match.may_mutate)
+        self.assertFalse(match.may_mutate)
         self.assertEqual("exact", match.match_kind)
         self.assertEqual(Path("documents/cloud-log.md"), match.memory_path)
+        self.assertEqual("trust_not_configured", match.trust_status)
+
+    def test_exact_trusted_additive_write_with_current_user_intent_may_mutate(self):
+        memory = self.memory()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = self.write_index(root, [self.exact_entry()])
+            self.write_trust(root, [self.trust_grant()])
+
+            match = memory.validate_memory_index(
+                index_path=index,
+                canonical_url=CANONICAL_URL,
+                token=DOCUMENT_TOKEN,
+                memory_root=root,
+                explicit_write_intent=True,
+                operation="append",
+                log_type="engineering",
+                audience="internal",
+                identity="user",
+                now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+            )
+
+        self.assertTrue(match.may_mutate)
+        self.assertEqual("exact", match.match_kind)
+        self.assertEqual("trusted", match.trust_status)
+
+    def test_trust_marker_does_not_create_write_intent(self):
+        memory = self.memory()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = self.write_index(root, [self.exact_entry()])
+            self.write_trust(root, [self.trust_grant()])
+
+            match = memory.validate_memory_index(
+                index_path=index,
+                canonical_url=CANONICAL_URL,
+                token=DOCUMENT_TOKEN,
+                memory_root=root,
+                operation="append",
+                log_type="engineering",
+                audience="internal",
+                identity="user",
+                now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+            )
+
+        self.assertFalse(match.may_mutate)
+        self.assertEqual("write_intent_required", match.trust_status)
+
+    def test_trust_marker_is_scoped_to_identity_operation_log_type_and_audience(self):
+        memory = self.memory()
+        cases = (
+            ({"identity": "bot"}, "identity_not_trusted"),
+            ({"operation": "overwrite"}, "operation_not_trusted"),
+            ({"log_type": "release"}, "content_scope_not_trusted"),
+            ({"audience": "external"}, "content_scope_not_trusted"),
+        )
+        for overrides, expected_status in cases:
+            with self.subTest(overrides=overrides), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                index = self.write_index(root, [self.exact_entry()])
+                self.write_trust(root, [self.trust_grant()])
+                request = {
+                    "identity": "user",
+                    "operation": "append",
+                    "log_type": "engineering",
+                    "audience": "internal",
+                }
+                request.update(overrides)
+
+                match = memory.validate_memory_index(
+                    index_path=index,
+                    canonical_url=CANONICAL_URL,
+                    token=DOCUMENT_TOKEN,
+                    memory_root=root,
+                    explicit_write_intent=True,
+                    now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+                    **request,
+                )
+
+            self.assertFalse(match.may_mutate)
+            self.assertEqual(expected_status, match.trust_status)
+
+    def test_inactive_expired_or_revoked_trust_marker_cannot_authorize_a_write(self):
+        memory = self.memory()
+        cases = (
+            (
+                self.trust_grant(authorized_at="2026-07-28T00:00:00+00:00"),
+                "trust_not_active",
+            ),
+            (
+                self.trust_grant(expires_at="2026-07-26T00:00:00+00:00"),
+                "trust_expired",
+            ),
+            (
+                self.trust_grant(revoked_at="2026-07-26T00:00:00+00:00"),
+                "trust_revoked",
+            ),
+        )
+        for grant, expected_status in cases:
+            with self.subTest(expected_status=expected_status), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                index = self.write_index(root, [self.exact_entry()])
+                self.write_trust(root, [grant])
+
+                match = memory.validate_memory_index(
+                    index_path=index,
+                    canonical_url=CANONICAL_URL,
+                    token=DOCUMENT_TOKEN,
+                    memory_root=root,
+                    explicit_write_intent=True,
+                    operation="append",
+                    log_type="engineering",
+                    audience="internal",
+                    identity="user",
+                    now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+                )
+
+            self.assertFalse(match.may_mutate)
+            self.assertEqual(expected_status, match.trust_status)
+
+    def test_trust_policy_rejects_target_drift_unknown_profiles_and_unsafe_schema(self):
+        memory = self.memory()
+        unsafe_grants = (
+            self.trust_grant(target_fingerprint="sha256:" + "0" * 64),
+            self.trust_grant(profile_id="missing-profile"),
+            self.trust_grant(operations=["append", "overwrite"]),
+            self.trust_grant(api_key="not-allowed"),
+        )
+        for grant in unsafe_grants:
+            with self.subTest(grant=grant), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                index = self.write_index(root, [self.exact_entry()])
+                self.write_trust(root, [grant])
+
+                with self.assertRaises(memory.PrivateMemoryError):
+                    memory.validate_memory_index(
+                        index_path=index,
+                        canonical_url=CANONICAL_URL,
+                        token=DOCUMENT_TOKEN,
+                        memory_root=root,
+                        explicit_write_intent=True,
+                        operation="append",
+                        log_type="engineering",
+                        audience="internal",
+                        identity="user",
+                        now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+                    )
+
+    def test_trust_timestamp_boundaries_and_timezone_are_fail_closed(self):
+        memory = self.memory()
+        current = datetime(2026, 7, 27, tzinfo=timezone.utc)
+        cases = (
+            (
+                self.trust_grant(authorized_at="2026-07-27T00:00:00+00:00"),
+                True,
+                "trusted",
+            ),
+            (
+                self.trust_grant(expires_at="2026-07-27T00:00:00+00:00"),
+                False,
+                "trust_expired",
+            ),
+            (
+                self.trust_grant(revoked_at="2026-07-27T00:00:00+00:00"),
+                False,
+                "trust_revoked",
+            ),
+        )
+        for grant, expected_mutation, expected_status in cases:
+            with self.subTest(expected_status=expected_status), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                index = self.write_index(root, [self.exact_entry()])
+                self.write_trust(root, [grant])
+
+                match = memory.validate_memory_index(
+                    index_path=index,
+                    canonical_url=CANONICAL_URL,
+                    token=DOCUMENT_TOKEN,
+                    memory_root=root,
+                    explicit_write_intent=True,
+                    operation="append",
+                    log_type="engineering",
+                    audience="internal",
+                    identity="user",
+                    now=current,
+                )
+
+            self.assertEqual(expected_mutation, match.may_mutate)
+            self.assertEqual(expected_status, match.trust_status)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = self.write_index(root, [self.exact_entry()])
+            self.write_trust(
+                root,
+                [self.trust_grant(authorized_at="2026-07-18T12:00:00")],
+            )
+            with self.assertRaises(memory.PrivateMemoryError):
+                memory.validate_memory_index(
+                    index_path=index,
+                    canonical_url=CANONICAL_URL,
+                    token=DOCUMENT_TOKEN,
+                    memory_root=root,
+                    explicit_write_intent=True,
+                    operation="append",
+                    log_type="engineering",
+                    audience="internal",
+                    identity="user",
+                    now=current,
+                )
+
+    def test_trust_fingerprint_and_resolve_cli_return_machine_readable_decisions(self):
+        memory = self.memory()
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = self.write_index(root, [self.exact_entry()])
+            self.write_trust(root, [self.trust_grant()])
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = memory.main(
+                    [
+                        "trust-fingerprint",
+                        "--index",
+                        str(index),
+                        "--memory-root",
+                        str(root),
+                        "--canonical-url",
+                        CANONICAL_URL,
+                        "--target-token",
+                        DOCUMENT_TOKEN,
+                    ]
+                )
+            self.assertEqual(0, code)
+            self.assertEqual(TARGET_FINGERPRINT, json.loads(output.getvalue())["target_fingerprint"])
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = memory.main(
+                    [
+                        "resolve",
+                        "--index",
+                        str(index),
+                        "--memory-root",
+                        str(root),
+                        "--canonical-url",
+                        CANONICAL_URL,
+                        "--target-token",
+                        DOCUMENT_TOKEN,
+                        "--explicit-write-intent",
+                        "--write-operation",
+                        "append",
+                        "--log-type",
+                        "engineering",
+                        "--audience",
+                        "internal",
+                        "--identity",
+                        "user",
+                    ]
+                )
+            payload = json.loads(output.getvalue())
+            self.assertEqual(0, code)
+            self.assertTrue(payload["match"]["may_mutate"])
+            self.assertEqual("trusted", payload["match"]["trust_status"])
 
     def test_every_declared_correction_policy_is_usable(self):
         memory = self.memory()
@@ -267,6 +559,7 @@ class PrivateMemoryContractTests(unittest.TestCase):
     def test_wiki_target_matches_wiki_node_token_while_retaining_backing_docx_token(self):
         memory = self.memory()
         wiki_token = "wikiTestNode000000000"
+        rebound_document_token = "dox" + "cnReboundToken00000000"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             entry = self.exact_entry(
@@ -276,9 +569,156 @@ class PrivateMemoryContractTests(unittest.TestCase):
                 document_kind="wiki",
             )
             index = self.write_index(root, [entry])
-            match = memory.validate_memory_index(index, entry["canonical_url"], wiki_token, root)
+            fingerprint = memory.profile_target_fingerprint(entry)
+            rebound = dict(entry, document_token=rebound_document_token)
+            self.assertNotEqual(
+                fingerprint,
+                memory.profile_target_fingerprint(rebound),
+            )
+            self.write_trust(
+                root,
+                [self.trust_grant(target_fingerprint=fingerprint)],
+            )
 
-        self.assertTrue(match.may_mutate)
+            missing_backing = memory.validate_memory_index(
+                index,
+                entry["canonical_url"],
+                wiki_token,
+                root,
+                explicit_write_intent=True,
+                operation="append",
+                log_type="engineering",
+                audience="internal",
+                identity="user",
+                now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+            )
+            rebound_backing = memory.validate_memory_index(
+                index,
+                entry["canonical_url"],
+                wiki_token,
+                root,
+                backing_document_token=rebound_document_token,
+                explicit_write_intent=True,
+                operation="append",
+                log_type="engineering",
+                audience="internal",
+                identity="user",
+                now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+            )
+            exact_backing = memory.validate_memory_index(
+                index,
+                entry["canonical_url"],
+                wiki_token,
+                root,
+                backing_document_token=DOCUMENT_TOKEN,
+                explicit_write_intent=True,
+                operation="append",
+                log_type="engineering",
+                audience="internal",
+                identity="user",
+                now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+            )
+
+        self.assertFalse(missing_backing.may_mutate)
+        self.assertEqual("backing_target_required", missing_backing.trust_status)
+        self.assertFalse(rebound_backing.may_mutate)
+        self.assertEqual("backing_target_mismatch", rebound_backing.trust_status)
+        self.assertTrue(exact_backing.may_mutate)
+        self.assertEqual("trusted", exact_backing.trust_status)
+
+    def test_wiki_resolve_cli_requires_and_checks_live_backing_document_token(self):
+        memory = self.memory()
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        wiki_token = "wikiTestNode000000000"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            entry = self.exact_entry(
+                canonical_url="https://example." + "feishu.cn/wiki/" + wiki_token,
+                document_token=DOCUMENT_TOKEN,
+                wiki_node_token=wiki_token,
+                document_kind="wiki",
+            )
+            index = self.write_index(root, [entry])
+            self.write_trust(
+                root,
+                [
+                    self.trust_grant(
+                        target_fingerprint=memory.profile_target_fingerprint(entry)
+                    )
+                ],
+            )
+            arguments = [
+                "resolve",
+                "--index",
+                str(index),
+                "--memory-root",
+                str(root),
+                "--canonical-url",
+                entry["canonical_url"],
+                "--target-token",
+                wiki_token,
+                "--backing-document-token",
+                DOCUMENT_TOKEN,
+                "--explicit-write-intent",
+                "--write-operation",
+                "append",
+                "--log-type",
+                "engineering",
+                "--audience",
+                "internal",
+                "--identity",
+                "user",
+            ]
+
+            missing_fingerprint_output = StringIO()
+            with redirect_stdout(missing_fingerprint_output):
+                missing_fingerprint_code = memory.main(
+                    [
+                        "trust-fingerprint",
+                        "--index",
+                        str(index),
+                        "--memory-root",
+                        str(root),
+                        "--canonical-url",
+                        entry["canonical_url"],
+                        "--target-token",
+                        wiki_token,
+                    ]
+                )
+            fingerprint_output = StringIO()
+            with redirect_stdout(fingerprint_output):
+                fingerprint_code = memory.main(
+                    [
+                        "trust-fingerprint",
+                        "--index",
+                        str(index),
+                        "--memory-root",
+                        str(root),
+                        "--canonical-url",
+                        entry["canonical_url"],
+                        "--target-token",
+                        wiki_token,
+                        "--backing-document-token",
+                        DOCUMENT_TOKEN,
+                    ]
+                )
+            output = StringIO()
+            with redirect_stdout(output):
+                code = memory.main(arguments)
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(2, missing_fingerprint_code)
+        self.assertFalse(json.loads(missing_fingerprint_output.getvalue())["ok"])
+        self.assertEqual(0, fingerprint_code)
+        self.assertEqual(
+            memory.profile_target_fingerprint(entry),
+            json.loads(fingerprint_output.getvalue())["target_fingerprint"],
+        )
+        self.assertEqual(0, code)
+        self.assertTrue(payload["match"]["may_mutate"])
+        self.assertEqual("trusted", payload["match"]["trust_status"])
 
     def test_document_kind_enforces_wiki_node_token_presence(self):
         memory = self.memory()
@@ -309,7 +749,7 @@ class PrivateMemoryContractTests(unittest.TestCase):
                 )
                 index = self.write_index(root, [entry])
                 match = memory.validate_memory_index(index, entry["canonical_url"], document_token, root)
-                self.assertTrue(match.may_mutate)
+                self.assertFalse(match.may_mutate)
 
     def test_alias_cli_is_non_authorizing_and_mutually_exclusive_with_exact_target(self):
         memory = self.memory()
@@ -673,7 +1113,7 @@ class PrivateMemoryContractTests(unittest.TestCase):
                 primary["document_token"],
                 root,
             )
-            self.assertTrue(primary_match.may_mutate)
+            self.assertFalse(primary_match.may_mutate)
 
             with self.assertRaises(memory.PrivateMemoryError):
                 memory.validate_index(index, root)
