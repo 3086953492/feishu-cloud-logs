@@ -703,12 +703,12 @@ class RealPublicPackageContractTests(unittest.TestCase):
 
     def test_reference_boundaries_cover_history_privacy_and_document_accessibility(self):
         writing = self.read("references/writing-quality.md")
-        for audience in ("客户", "工程团队", "管理层", "审计人员"):
+        for audience in ("客户", "工程读者", "管理层", "审计读者"):
             self.assertIn(audience, writing)
         for distinction in ("事实", "推测", "决定", "待确认"):
             self.assertIn(distinction, writing)
         layout = self.read("references/layout-and-visuals.md")
-        for phrase in ("4–6", "折线图", "条形图", "替代文本", "等价正文", "图片元数据"):
+        for phrase in ("替代文本", "等价正文", "图片元数据"):
             self.assertIn(phrase, layout)
         private = self.read("references/private-memory-contract.md")
         self.assertIn("`{version: 1, profiles: [...]}`", private)

@@ -94,6 +94,41 @@ class PrivateMemoryContractTests(unittest.TestCase):
         self.assertEqual(Path("documents/cloud-log.md"), match.memory_path)
         self.assertEqual("trust_not_configured", match.trust_status)
 
+    def test_document_style_notes_remain_scoped_and_resolution_is_read_only(self):
+        memory = self.memory()
+        other_token = "dox" + "cnOtherStyle00000000"
+        other_url = "https://example." + "feishu.cn/docx/" + other_token
+        entries = [self.exact_entry(), self.exact_entry(
+            profile_id="research", aliases=["research-log"],
+            canonical_url=other_url, document_token=other_token,
+            memory_path="documents/research.md",
+        )]
+        notes = [
+            "# 运营章节\n已确认：加粗日期，保留必要限制。\n"
+            "依据：用户明确要求今后沿用。\n暂定观察：通常采用一段。\n"
+            "修订：取消固定句数。\n风格维护许可：本章节非敏感写作约定，当前有效。\n",
+            "# 研究附录\n已确认：长段落讨论方法与限制。\n"
+            "依据：用户修订的研究样例。\n例外：本次摘要使用列表。\n"
+            "风格维护许可：未授予；本笔记来自一次明确记住要求。\n",
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = self.write_index(root, entries)
+            for entry, note in zip(entries, notes):
+                (root / entry["memory_path"]).write_text(note, encoding="utf-8")
+            before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+            for entry, note in zip(entries, notes):
+                match = memory.validate_memory_index(
+                    index_path=index, canonical_url=entry["canonical_url"],
+                    token=entry["document_token"], memory_root=root,
+                )
+                self.assertEqual("exact", match.match_kind)
+                self.assertEqual(Path(entry["memory_path"]), match.memory_path)
+                self.assertEqual(note, (root / match.memory_path).read_text(encoding="utf-8"))
+                self.assertFalse(match.may_mutate)
+                self.assertEqual("trust_not_configured", match.trust_status)
+            self.assertEqual(before, {path: path.read_bytes() for path in root.rglob("*") if path.is_file()})
+
     def test_exact_trusted_additive_write_with_current_user_intent_may_mutate(self):
         memory = self.memory()
         with tempfile.TemporaryDirectory() as temporary:

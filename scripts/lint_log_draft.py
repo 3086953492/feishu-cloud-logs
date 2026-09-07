@@ -1,4 +1,4 @@
-"""Conservative, offline linting for Feishu cloud-log drafts."""
+"""Offline risk checks and opt-in writing advice; not a document style gate."""
 from __future__ import annotations
 
 import argparse
@@ -112,6 +112,7 @@ class JsonArgumentParser(argparse.ArgumentParser):
 class Issue:
     code: str
     message: str
+    severity: str = "warning"
 
 
 _HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$")
@@ -178,62 +179,72 @@ def _valid_timezone_value(value: str) -> bool:
     return True
 
 
-def lint_draft(draft: str, *, log_type: str, profile: str = "full") -> list[Issue]:
+def lint_draft(
+    draft: str, *, log_type: str, profile: str = "full",
+    check_template: bool = False, style_advice: bool = False,
+) -> list[Issue]:
+    """Return errors and review hints without inferring the document's style.
+
+    full/append describe the scope of the supplied text. Completeness of prose,
+    factual support, and applicability of warnings require contextual review.
+    """
     if log_type not in SUPPORTED_LOG_TYPES:
         raise ValueError("unsupported log type: " + log_type)
     if profile not in SUPPORTED_PROFILES:
         raise ValueError("unsupported lint profile: " + profile)
+    if check_template and profile != "full":
+        raise ValueError("template checking applies only to a full record")
     issues: list[Issue] = []
-    def add(code: str, message: str) -> None:
+    def add(code: str, message: str, severity: str = "warning") -> None:
         if code not in {issue.code for issue in issues}:
-            issues.append(Issue(code, message))
+            issues.append(Issue(code, message, severity))
 
     fields = _fields(draft)
     labels = set(fields)
-    if profile == "full":
+    if not draft.strip():
+        add("empty_draft", "A log draft must contain text.", "error")
+    if check_template:
         groups = REQUIRED_FIELDS[log_type]
         missing = [group for group in groups if not labels.intersection(alias.lower() for alias in group)]
         if missing:
-            add("missing_required_field", "This log type is missing required planning fields.")
+            add("missing_required_field", "Suggested template labels are absent; review the content, including prose and parent context, before adding fields.")
         if not _matching_values(fields, DATE_FIELDS[log_type]):
-            add("missing_date", "The type-specific applicable date is required.")
-    elif not draft.strip():
-        add("empty_draft", "An appended log entry must contain text.")
+            add("missing_date", "No template date label was found; check whether the applicable time is already clear in context.")
     date_values = _matching_values(fields, ALL_DATE_FIELDS)
     if any(not _valid_date_value(value) for value in date_values):
-        add("invalid_date", "Every explicit date field must be ISO 8601 or explicitly unknown.")
+        add("invalid_date", "A date field is not recognized as ISO 8601; review its meaning and the document's date convention, without automatically reformatting it.")
     timezone_aliases = {"timezone", "time zone", "时区"}
     timezone_values = _matching_values(fields, timezone_aliases)
-    if not timezone_values and profile == "full":
-        add("missing_timezone", "An IANA timezone is required.")
+    if not timezone_values and check_template:
+        add("missing_timezone", "No template timezone label was found; check whether a timezone is relevant and already established.")
     if any(not _valid_timezone_value(value) for value in timezone_values):
-        add("invalid_timezone", "Every explicit timezone field must contain a valid IANA zone.")
+        add("invalid_timezone", "A timezone is not recognized as an IANA zone; review it in context rather than imposing a display format.")
     previous = 0
     for match in re.finditer(r"(?m)^(#{1,6})\s+", draft):
         level = len(match.group(1))
-        if previous and level > previous + 1:
-            add("heading_level_jump", "Headings must not skip a level.")
+        if style_advice and previous and level > previous + 1:
+            add("heading_level_jump", "Check whether the heading jump is intentional in the existing document hierarchy.")
         previous = level
-    if re.search(r"(?m)^\s*[\U0001f534\U0001f7e1\U0001f7e2]\s*$", draft) or re.search(r"<span\b[^>]*\bcolor\s*:[^>]*>\s*(?:[●■◆]|\U0001f534|\U0001f7e1|\U0001f7e2)\s*</span>\s*$", draft, re.I | re.M):
-        add("color_only_status", "Status needs text as well as color.")
+    if style_advice and (re.search(r"(?m)^\s*[\U0001f534\U0001f7e1\U0001f7e2]\s*$", draft) or re.search(r"<span\b[^>]*\bcolor\s*:[^>]*>\s*(?:[●■◆]|\U0001f534|\U0001f7e1|\U0001f7e2)\s*</span>\s*$", draft, re.I | re.M)):
+        add("color_only_status", "Check that readers can understand the status from the text or an existing legend, including without color.")
     if re.search(r"(?:customer update|客户(?:更新|通知)).{0,200}(?:/admin\b|internal\b|endpoint\b|MobileCategoryPanel\b|Vitest\b|\bSQL\b|内部(?:接口|实现))", draft, re.I | re.S):
-        add("internal_implementation_leak", "Customer-facing text exposes internal implementation.")
+        add("internal_implementation_leak", "Review whether these technical terms suit this document's audience; a keyword match does not prove disclosure.")
     if re.search(r"\bstatistically significant\b|统计显著性|具有显著性|显著提升", draft, re.I):
-        add("unsupported_significance_claim", "Significance claims need recorded evidence.")
+        add("unsupported_significance_claim", "Review the claim and its evidence in context, including negation; this keyword check cannot establish whether it is supported.")
     if _OBVIOUS_SECRET.search(draft):
-        add("obvious_secret", "Draft appears to contain a secret.")
+        add("obvious_secret", "Draft appears to contain a secret; resolve or remove it before writing.", "error")
     if _POSSIBLE_PII.search(draft):
-        add("possible_pii", "Draft appears to contain an email address or phone number.")
+        add("possible_pii", "Review whether this contact information is public, necessary, and authorized; redact unnecessary personal data.")
     markdown_images = list(re.finditer(r"!\[([^\]]*)\]\(([^)]*)\)", draft))
     for image in markdown_images:
-        if not image.group(1).strip():
-            add("missing_visual_caption", "Visuals need a caption or text fallback.")
+        if style_advice and not image.group(1).strip():
+            add("missing_visual_caption", "Check whether adjacent text already explains the image or whether it is decorative; follow the document's visual policy.")
     html_images = list(re.finditer(r"<img\b([^>]*)>", draft, re.I))
     html_descriptors: list[str] = []
     for image in html_images:
         alt = re.search(r"\balt\s*=\s*(['\"])(.*?)\1", image.group(1), re.I | re.S)
-        if not alt or not alt.group(2).strip():
-            add("missing_visual_caption", "Visuals need a caption or text fallback.")
+        if style_advice and (not alt or not alt.group(2).strip()):
+            add("missing_visual_caption", "Check whether adjacent text already explains the image or whether it is decorative; follow the document's visual policy.")
         src = re.search(r"\bsrc\s*=\s*(['\"])(.*?)\1", image.group(1), re.I | re.S)
         html_descriptors.append(
             " ".join(
@@ -246,8 +257,8 @@ def lint_draft(draft: str, *, log_type: str, profile: str = "full") -> list[Issu
             )
         )
     for line in draft.splitlines():
-        if line.count("|") >= 8:
-            add("wide_table", "Markdown tables must not exceed six core columns.")
+        if style_advice and line.count("|") >= 8:
+            add("wide_table", "Check readability of this wide table on the intended reading surface; there is no universal column limit.")
     visual_descriptors = [
         image.group(1) + " " + image.group(2) for image in markdown_images
     ] + html_descriptors
@@ -255,30 +266,33 @@ def lint_draft(draft: str, *, log_type: str, profile: str = "full") -> list[Issu
         re.search(r"\b(?:chart|trend|comparison)\b|图表|趋势|对比", descriptor, re.I)
         for descriptor in visual_descriptors
     )
-    if chart_visual:
+    if style_advice and chart_visual:
         context_groups = (("time range", "时间范围"), ("unit", "单位"), ("source", "来源"), ("summary", "text summary", "文字摘要", "正文摘要"))
         if any(not labels.intersection(alias.lower() for alias in group) for group in context_groups):
-            add("incomplete_visual_context", "Charts need time range, unit, source, and text summary.")
-    if re.search(r"\bwhiteboard\b|白板", draft, re.I) and not labels.intersection({"text summary", "正文摘要", "等价正文"}):
-        add("missing_whiteboard_text", "Whiteboards need equivalent body text.")
+            add("incomplete_visual_context", "Review whether applicable context and conclusions are clear in the chart, nearby text, or parent section; labels need not be repeated.")
+    if style_advice and re.search(r"\bwhiteboard\b|白板", draft, re.I) and not labels.intersection({"text summary", "正文摘要", "等价正文"}):
+        add("missing_whiteboard_text", "Check whether the document already explains the whiteboard's relevant conclusions in text.")
     if log_type in {"incident", "audit", "decision"} and re.search(r"rewrote? the earlier entry.*(?:no longer visible|removed)|重写.*(?:不可见|删除)", draft, re.I | re.S):
-        add("silent_history_rewrite", "Sensitive history changes must preserve an audit trail.")
+        add("silent_history_rewrite", "Review the actual diff and context for a history rewrite; this language match is not proof. Preserve published sensitive history.")
     return issues
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = JsonArgumentParser(description="Lint a Feishu cloud-log draft without network access.")
     parser.add_argument("--log-type", required=True, choices=SUPPORTED_LOG_TYPES)
-    parser.add_argument("--profile", choices=SUPPORTED_PROFILES, default="full", help="Use append for a fragment within an existing log; full requires a complete record.")
+    parser.add_argument("--profile", choices=SUPPORTED_PROFILES, default="full", help="Describe a full record or an append fragment; neither forces template labels or a writing style.")
+    parser.add_argument("--check-template", action="store_true", help="Opt in to non-blocking template-label hints for full records, only when a template is requested.")
+    parser.add_argument("--style-advice", action="store_true", help="Opt in to non-blocking generic layout hints when the task needs them.")
     parser.add_argument("--file", required=True, type=Path)
     try:
         args = parser.parse_args(argv)
-        issues = lint_draft(args.file.read_text(encoding="utf-8"), log_type=args.log_type, profile=args.profile)
+        issues = lint_draft(args.file.read_text(encoding="utf-8"), log_type=args.log_type, profile=args.profile, check_template=args.check_template, style_advice=args.style_advice)
     except (OSError, UnicodeError, TypeError, ValueError) as error:
         print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
         return 2
-    print(json.dumps({"ok": not issues, "issues": [asdict(issue) for issue in issues]}, ensure_ascii=False, sort_keys=True))
-    return 1 if issues else 0
+    has_errors = any(issue.severity == "error" for issue in issues)
+    print(json.dumps({"ok": not has_errors, "issues": [asdict(issue) for issue in issues]}, ensure_ascii=False, sort_keys=True))
+    return 1 if has_errors else 0
 
 
 if __name__ == "__main__":

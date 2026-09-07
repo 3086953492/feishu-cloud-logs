@@ -168,12 +168,13 @@ class DraftLintContractTests(unittest.TestCase):
             with self.subTest(log_type=log_type):
                 self.assertEqual([], lint.lint_draft(self.complete_draft(log_type), log_type=log_type))
 
-    def test_each_log_type_requires_its_specific_planning_fields(self):
+    def test_opt_in_template_check_reports_its_suggested_fields(self):
         lint = self.lint_module()
         for log_type in lint.SUPPORTED_LOG_TYPES:
             with self.subTest(log_type=log_type):
-                issues = lint.lint_draft("# Log\n\nDate: 2026-07-18\nTimezone: UTC", log_type=log_type)
+                issues = lint.lint_draft("# Log\n\nDate: 2026-07-18\nTimezone: UTC", log_type=log_type, check_template=True)
                 self.assertIn("missing_required_field", self.issue_codes(issues))
+                self.assertTrue(all(issue.severity == "warning" for issue in issues))
 
     def test_accepts_a_complete_approved_chinese_template_for_every_log_type(self):
         lint = self.lint_module()
@@ -191,7 +192,7 @@ class DraftLintContractTests(unittest.TestCase):
 
         self.assertEqual([], lint.lint_draft(draft, log_type="release"))
 
-    def test_release_publication_time_does_not_replace_actual_delivery_date(self):
+    def test_template_advice_distinguishes_publication_from_delivery_labels(self):
         lint = self.lint_module()
         draft = self.complete_draft(
             "release",
@@ -201,7 +202,7 @@ class DraftLintContractTests(unittest.TestCase):
 
         self.assertIn(
             "missing_required_field",
-            self.issue_codes(lint.lint_draft(draft, log_type="release")),
+            self.issue_codes(lint.lint_draft(draft, log_type="release", check_template=True)),
         )
 
     def test_decision_and_project_accept_the_taxonomy_decision_label(self):
@@ -227,7 +228,7 @@ class DraftLintContractTests(unittest.TestCase):
                                 language=language,
                                 aliases_by_index={field_index: alias},
                             )
-                            self.assertEqual([], lint.lint_draft(draft, log_type=log_type))
+                            self.assertEqual([], lint.lint_draft(draft, log_type=log_type, check_template=True))
 
     def test_accepts_every_exact_type_specific_date_alias(self):
         lint = self.lint_module()
@@ -238,7 +239,7 @@ class DraftLintContractTests(unittest.TestCase):
                         draft = self.complete_draft(log_type, language=language, date_alias=alias)
                         self.assertEqual([], lint.lint_draft(draft, log_type=log_type))
 
-    def test_each_approved_semantic_field_is_required_in_english_and_chinese(self):
+    def test_opt_in_template_advice_recognizes_missing_labels_in_both_languages(self):
         lint = self.lint_module()
         for log_type, groups in self.APPROVED_FIELDS.items():
             for language in ("english", "chinese"):
@@ -254,20 +255,20 @@ class DraftLintContractTests(unittest.TestCase):
                                 omitted_index=omitted_index,
                                 date_alias=date_alias,
                             ),
-                            log_type=log_type,
+                            log_type=log_type, check_template=True,
                         )
                         self.assertIn("missing_required_field", self.issue_codes(issues))
 
-    def test_generic_date_does_not_replace_type_specific_applicable_time_semantics(self):
+    def test_opt_in_template_advice_does_not_infer_the_meaning_of_generic_dates(self):
         lint = self.lint_module()
         for log_type in self.DATE_FIELDS:
             with self.subTest(log_type=log_type):
                 draft = self.complete_draft(log_type, include_date=False) + "\n\n## Date\n\n2026-07-18"
-                codes = self.issue_codes(lint.lint_draft(draft, log_type=log_type))
+                codes = self.issue_codes(lint.lint_draft(draft, log_type=log_type, check_template=True))
                 self.assertNotIn("missing_required_field", codes)
                 self.assertIn("missing_date", codes)
 
-    def test_dates_and_timezones_require_values_not_just_labels(self):
+    def test_empty_date_and_timezone_values_receive_review_warnings(self):
         lint = self.lint_module()
         for log_type in self.DATE_FIELDS:
             with self.subTest(log_type=log_type, field="date_nonsense"):
@@ -309,7 +310,7 @@ class DraftLintContractTests(unittest.TestCase):
                 codes = self.issue_codes(
                     lint.lint_draft(
                         self.complete_draft(log_type, include_timezone=False),
-                        log_type=log_type,
+                        log_type=log_type, check_template=True,
                     )
                 )
                 self.assertIn("missing_timezone", codes)
@@ -351,14 +352,14 @@ class DraftLintContractTests(unittest.TestCase):
     def test_reports_missing_applicable_date_and_timezone(self):
         lint = self.lint_module()
 
-        issues = lint.lint_draft("# Incident\n\n## Summary\n\nService recovered.", log_type="incident")
+        issues = lint.lint_draft("# Incident\n\n## Summary\n\nService recovered.", log_type="incident", check_template=True)
 
         self.assertTrue({"missing_date", "missing_timezone"} <= self.issue_codes(issues))
 
     def test_reports_heading_level_jumps(self):
         lint = self.lint_module()
 
-        issues = lint.lint_draft("# Project\n\n### Outcome\n\nRecorded.", log_type="project")
+        issues = lint.lint_draft("# Project\n\n### Outcome\n\nRecorded.", log_type="project", style_advice=True)
 
         self.assertIn("heading_level_jump", self.issue_codes(issues))
 
@@ -374,7 +375,7 @@ class DraftLintContractTests(unittest.TestCase):
         issues = lint.lint_draft(
             "# Engineering\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai\n\n"
             "<span style=\"color:red\">\u25cf</span>",
-            log_type="engineering",
+            log_type="engineering", style_advice=True,
         )
 
         self.assertIn("color_only_status", self.issue_codes(issues))
@@ -407,7 +408,7 @@ class DraftLintContractTests(unittest.TestCase):
         issues = lint.lint_draft(
             "# Project\n\nDate: 2026-07-18\nTimezone: Asia/Shanghai\n\n"
             "Token: sk-live-12345678901234567890\n\n![](chart.png)",
-            log_type="project",
+            log_type="project", style_advice=True,
         )
 
         self.assertTrue({"obvious_secret", "missing_visual_caption"} <= self.issue_codes(issues))
@@ -493,7 +494,7 @@ class DraftLintContractTests(unittest.TestCase):
         lint = self.lint_module()
         for emoji in ("\U0001f534", "\U0001f7e1", "\U0001f7e2"):
             with self.subTest(emoji=emoji):
-                issues = lint.lint_draft(f"# Log\n\nDate: 2026-07-18\nTimezone: UTC\n\n{emoji}", log_type="engineering")
+                issues = lint.lint_draft(f"# Log\n\nDate: 2026-07-18\nTimezone: UTC\n\n{emoji}", log_type="engineering", style_advice=True)
                 self.assertIn("color_only_status", self.issue_codes(issues))
 
     def test_reports_html_image_without_alt_and_customer_implementation_terms(self):
@@ -501,7 +502,7 @@ class DraftLintContractTests(unittest.TestCase):
         issues = lint.lint_draft(
             "# Release\n\nDate: 2026-07-18\nTimezone: UTC\n\n"
             "Customer update: MobileCategoryPanel uses Vitest and a SQL query. <img src=\"chart.png\">",
-            log_type="release",
+            log_type="release", style_advice=True,
         )
         self.assertTrue({"missing_visual_caption", "internal_implementation_leak"} <= self.issue_codes(issues))
 
@@ -515,7 +516,7 @@ class DraftLintContractTests(unittest.TestCase):
         issues = lint.lint_draft(
             self.complete_draft("project") + "\n\n|a|b|c|d|e|f|g|\n|-|-|-|-|-|-|-|\n|1|2|3|4|5|6|7|\n\n"
             "![Trend](chart.png)\n\nWhiteboard: [diagram](board-link)",
-            log_type="project",
+            log_type="project", style_advice=True,
         )
         self.assertTrue({"wide_table", "incomplete_visual_context", "missing_whiteboard_text"} <= self.issue_codes(issues))
 
@@ -528,7 +529,7 @@ class DraftLintContractTests(unittest.TestCase):
             with self.subTest(image=image):
                 issues = lint.lint_draft(
                     self.complete_draft("project") + "\n\n" + image,
-                    log_type="project",
+                    log_type="project", style_advice=True,
                 )
                 self.assertNotIn("incomplete_visual_context", self.issue_codes(issues))
 
@@ -544,22 +545,22 @@ class DraftLintContractTests(unittest.TestCase):
             with self.subTest(chart=chart):
                 issues = lint.lint_draft(
                     self.complete_draft("project") + "\n\n" + chart,
-                    log_type="project",
+                    log_type="project", style_advice=True,
                 )
                 self.assertIn(
                     "incomplete_visual_context",
                     self.issue_codes(issues),
                 )
 
-    def test_chinese_chart_and_whiteboard_require_context_and_equivalent_text(self):
+    def test_opt_in_chinese_visual_advice_suggests_context_and_equivalent_text(self):
         lint = self.lint_module()
         issues = lint.lint_draft(
             self.complete_chinese_draft("project") + "\n\n![\u8d8b\u52bf\u56fe\u8868](chart.png)\n\n\u767d\u677f\uff1a[\u67b6\u6784](board-link)",
-            log_type="project",
+            log_type="project", style_advice=True,
         )
         self.assertTrue({"incomplete_visual_context", "missing_whiteboard_text"} <= self.issue_codes(issues))
 
-    def test_default_profile_preserves_full_record_requirements(self):
+    def test_default_profile_still_selects_full_without_forcing_a_template(self):
         lint = self.lint_module()
         for log_type in lint.SUPPORTED_LOG_TYPES:
             for draft in (self.complete_draft(log_type), "### 分类显示\n\n优化了分类图标显示。"):
@@ -575,10 +576,7 @@ class DraftLintContractTests(unittest.TestCase):
         for log_type in lint.SUPPORTED_LOG_TYPES:
             with self.subTest(log_type=log_type):
                 self.assertEqual([], lint.lint_draft(draft, log_type=log_type, profile="append"))
-                self.assertTrue(
-                    {"missing_required_field", "missing_date", "missing_timezone"}
-                    <= self.issue_codes(lint.lint_draft(draft, log_type=log_type))
-                )
+                self.assertEqual([], lint.lint_draft(draft, log_type=log_type))
 
     def test_append_rejects_empty_or_whitespace_only_text(self):
         lint = self.lint_module()
@@ -673,7 +671,7 @@ class DraftLintContractTests(unittest.TestCase):
         for code, fragment in cases.items():
             with self.subTest(code=code):
                 self.assertIn(code, self.issue_codes(lint.lint_draft(
-                    fragment, log_type="release", profile="append",
+                    fragment, log_type="release", profile="append", style_advice=True,
                 )))
 
     def test_append_keeps_sensitive_history_checks(self):
@@ -690,7 +688,7 @@ class DraftLintContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported lint profile"):
             lint.lint_draft("分类显示优化。", log_type="release", profile="quick")
 
-    def test_cli_profiles_preserve_json_and_exit_code_contracts(self):
+    def test_cli_profiles_report_issue_severity_and_matching_exit_status(self):
         lint = self.lint_module()
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "draft.md"
@@ -698,9 +696,17 @@ class DraftLintContractTests(unittest.TestCase):
             cases = (
                 (self.complete_draft("release"), [], 0),
                 (self.complete_draft("release"), ["--profile", "full"], 0),
-                ("分类显示优化。", [], 1),
-                ("分类显示优化。", ["--profile", "full"], 1),
+                ("分类显示优化。", [], 0),
+                ("分类显示优化。", ["--profile", "full"], 0),
                 ("分类显示优化。", ["--profile", "append"], 0),
+                ("分类显示优化。", ["--check-template"], 0),
+                ("分类显示优化。", ["--profile", "append", "--check-template"], 2),
+                ("# A\n\n### B\n\n说明。", ["--style-advice"], 0),
+                ("记录时间：2026.9.7\n时区：UTC+8\n说明。", [], 0),
+                ("Contact public@example.com", [], 0),
+                ("pass" + "word=x", [], 1),
+                ("pass" + "word=x", ["--style-advice", "--check-template"], 1),
+                (" ", [], 1),
                 (" ", ["--profile", "append"], 1),
                 ("分类显示优化。", ["--profile", "quick"], 2),
             )
@@ -718,7 +724,51 @@ class DraftLintContractTests(unittest.TestCase):
                         set(result),
                     )
                     for issue in result.get("issues", []):
-                        self.assertEqual({"code", "message"}, set(issue))
+                        self.assertEqual({"code", "message", "severity"}, set(issue))
+                    if expected_status != 2:
+                        self.assertEqual(
+                            expected_status == 1,
+                            any(issue["severity"] == "error" for issue in result["issues"]),
+                        )
+
+    def test_distinct_complete_document_styles_need_no_template_labels(self):
+        lint = self.lint_module()
+        drafts = {
+            "release": "**2026.9.7 · 商品管理**\n\n分类图标现可正常显示，便于区分类目。验证完成，尚未正式发布。",
+            "incident": "# 服务恢复记录\n\n10:00 接口开始超时。10:08 回滚后恢复。影响持续八分钟，根因仍在调查。",
+            "experiment": "# 本轮观察\n\n在相同请求集上比较两种配置，响应时间差异较小。样本只覆盖低负载，不外推到高峰。下一轮扩大负载范围。",
+        }
+        for log_type, draft in drafts.items():
+            with self.subTest(log_type=log_type):
+                self.assertEqual([], lint.lint_draft(draft, log_type=log_type))
+
+    def test_layout_advice_is_opt_in_and_never_blocks_document_style(self):
+        lint = self.lint_module()
+        draft = "# A\n\n### B\n\n|a|b|c|d|e|f|g|\n\n![](decoration.png)\n\n\U0001f7e2"
+        self.assertEqual([], lint.lint_draft(draft, log_type="project"))
+        issues = lint.lint_draft(draft, log_type="project", style_advice=True)
+        self.assertTrue({"wide_table", "heading_level_jump", "missing_visual_caption", "color_only_status"} <= self.issue_codes(issues))
+        self.assertTrue(all(issue.severity == "warning" for issue in issues))
+
+    def test_keywords_and_non_iso_display_dates_request_review_not_rewriting(self):
+        lint = self.lint_module()
+        draft = (
+            "记录时间：2026.9.7\n时区：UTC+8\n\n"
+            "尚未证明具有统计显著性。Contact public@example.com。\n"
+            "未重写旧记录，也未删除历史。Customer update: SQL export is available."
+        )
+        issues = lint.lint_draft(draft, log_type="audit")
+        self.assertTrue({"invalid_date", "invalid_timezone", "possible_pii", "unsupported_significance_claim", "silent_history_rewrite", "internal_implementation_leak"} <= self.issue_codes(issues))
+        self.assertTrue(all(issue.severity == "warning" for issue in issues))
+
+    def test_secret_and_empty_errors_are_independent_of_advice_flags(self):
+        lint = self.lint_module()
+        for profile in ("full", "append"):
+            for style_advice in (False, True):
+                for fragment, code in ((" \t\n", "empty_draft"), ("pass" + "word=x", "obvious_secret")):
+                    with self.subTest(profile=profile, advice=style_advice, code=code):
+                        issues = lint.lint_draft(fragment, log_type="release", profile=profile, style_advice=style_advice)
+                        self.assertIn(code, {issue.code for issue in issues if issue.severity == "error"})
 
 
 if __name__ == "__main__":
