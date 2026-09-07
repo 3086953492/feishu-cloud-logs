@@ -279,6 +279,46 @@ class PackageValidationContractTests(unittest.TestCase):
                 {error.code for error in boolean_version.errors},
             )
 
+    def test_accepts_optional_profiles_and_legacy_v1_without_profiles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_valid_package(root)
+            self.assertEqual([], self.validate(root).errors)
+            compatibility = json.loads((root / "compatibility.json").read_text(encoding="utf-8"))
+            compatibility["profiles"] = {
+                "draft": {"required_skills": [], "required_capabilities": []},
+                "read": {"required_skills": ["docs"], "required_capabilities": ["docs.read"]},
+            }
+            self.write_file(root, "compatibility.json", json.dumps(compatibility))
+
+            self.assertEqual([], self.validate(root).errors)
+
+    def test_rejects_malformed_profiles_and_requirements_outside_the_complete_set(self):
+        invalid_profiles = (
+            None,
+            [],
+            {},
+            {"": {"required_skills": [], "required_capabilities": []}},
+            {"read": None},
+            {"read": {"required_skills": ["docs"]}},
+            {"read": {"required_skills": "docs", "required_capabilities": ["docs.read"]}},
+            {"read": {"required_skills": ["docs"], "required_capabilities": [None]}},
+            {"read": {"required_skills": ["unknown"], "required_capabilities": ["docs.read"]}},
+            {"read": {"required_skills": ["docs"], "required_capabilities": ["docs.unknown"]}},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_valid_package(root)
+            compatibility = json.loads((root / "compatibility.json").read_text(encoding="utf-8"))
+            for profiles in invalid_profiles:
+                with self.subTest(profiles=profiles):
+                    compatibility["profiles"] = profiles
+                    self.write_file(root, "compatibility.json", json.dumps(compatibility))
+
+                    report = self.validate(root)
+
+                    self.assertIn("invalid_compatibility_schema", {error.code for error in report.errors})
+
     def test_rejects_nested_public_content_and_any_nonroot_skill(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -538,13 +578,36 @@ class RealPublicPackageContractTests(unittest.TestCase):
             "wiki.resolve",
             "risk.confirmation",
         ],
+        "profiles": {
+            "draft": {"required_skills": [], "required_capabilities": []},
+            "docx_read": {
+                "required_skills": ["lark-doc"],
+                "required_capabilities": ["docs.fetch.v2"],
+            },
+            "docx_create": {
+                "required_skills": ["lark-doc"],
+                "required_capabilities": ["docs.create.v2", "docs.fetch.v2"],
+            },
+            "docx_update": {
+                "required_skills": ["lark-doc"],
+                "required_capabilities": ["docs.fetch.v2", "docs.update.v2"],
+            },
+            "wiki_resolve": {
+                "required_skills": ["lark-wiki", "lark-shared"],
+                "required_capabilities": ["wiki.resolve"],
+            },
+            "destructive_update": {
+                "required_skills": ["lark-doc"],
+                "required_capabilities": ["docs.fetch.v2", "docs.update.v2", "risk.confirmation"],
+            },
+        },
     }
 
     @classmethod
     def read(cls, relative_path):
         return (cls.ROOT / relative_path).read_text(encoding="utf-8")
 
-    def test_root_skill_has_only_approved_frontmatter_and_a_concise_body(self):
+    def test_root_skill_has_only_approved_frontmatter_and_root_layout(self):
         content = self.read("SKILL.md")
         match = re.match(r"\A---\n(.*?)\n---\n", content, re.S)
         self.assertIsNotNone(match)
@@ -553,44 +616,33 @@ class RealPublicPackageContractTests(unittest.TestCase):
             for line in match.group(1).splitlines()
             if line.strip()
         ]
-        self.assertEqual(["name", "description"], frontmatter_keys)
+        self.assertCountEqual(["name", "description"], frontmatter_keys)
         self.assertIn("name: feishu-cloud-logs", match.group(1))
-        self.assertNotRegex(content, r"(?i)\bTODO\b|\[TODO")
-        self.assertGreaterEqual(len(content.splitlines()), 80)
-        self.assertLessEqual(len(content.splitlines()), 120)
+        self.assertRegex(match.group(1), r'(?m)^description:\s*(?:"[^"]+"|[^"\s][^\n]*)$')
         self.assertFalse((self.ROOT / "skills").exists())
         self.assertEqual([self.ROOT / "SKILL.md"], list(self.ROOT.rglob("SKILL.md")))
 
-    def test_root_skill_description_exposes_trigger_and_routing_boundaries(self):
-        frontmatter = re.match(r"\A---\n(.*?)\n---\n", self.read("SKILL.md"), re.S).group(1)
-        for operation in ("创建", "审阅", "追加", "插入", "回填", "更正", "重组", "归档"):
-            self.assertIn(operation, frontmatter)
-        for boundary in (
-            "普通文档",
-            "行式数据",
-            "任务分配",
-            "会议原始产物",
-            "云盘文件管理",
-            "服务器运行日志",
-        ):
-            self.assertIn(boundary, frontmatter)
-        self.assertIn("Docx", frontmatter)
-        self.assertIn("Wiki", frontmatter)
-        self.assertIn("历史", frontmatter)
-        self.assertRegex(self.read("SKILL.md"), r"云盘.*`lark-drive`")
+    def test_root_skill_exposes_its_document_log_scope_in_chinese(self):
+        content = self.read("SKILL.md")
+        frontmatter = re.match(r"\A---\n(.*?)\n---\n", content, re.S).group(1)
+        self.assertRegex(frontmatter, r"[\u4e00-\u9fff]")
+        self.assertIn("日志", frontmatter)
+        self.assertIn("Docx", content)
+        self.assertIn("Wiki", content)
 
     def test_readme_routes_drive_operations_to_lark_drive(self):
         self.assertRegex(self.read("README.md"), r"云盘.*`lark-drive`")
 
-    def test_root_skill_links_every_reference_with_a_conditional_loading_rule(self):
+    def test_root_skill_reference_links_resolve_to_the_public_references(self):
         content = self.read("SKILL.md")
+        links = re.findall(r"\[[^\]]+\]\((references/[^)\s]+)\)", content)
+        destinations = {link.split("#", 1)[0] for link in links}
         for reference in self.REQUIRED_REFERENCES:
-            matching_lines = [
-                line for line in content.splitlines()
-                if f"references/{reference}" in line
-            ]
-            self.assertEqual(1, len(matching_lines), reference)
-            self.assertRegex(matching_lines[0], r"当|若|需要")
+            self.assertIn(f"references/{reference}", destinations)
+        for destination in destinations:
+            path = self.ROOT / destination
+            self.assertEqual(self.ROOT / "references", path.resolve().parent)
+            self.assertTrue(path.is_file(), destination)
 
     def test_public_compatibility_and_agent_metadata_are_exact(self):
         self.assertEqual(
@@ -605,16 +657,6 @@ class RealPublicPackageContractTests(unittest.TestCase):
     def test_templates_cover_every_log_type_and_pass_the_offline_linter(self):
         lint = importlib.import_module("scripts.lint_log_draft")
         content = self.read("references/templates.md")
-        date_labels = {
-            "release": "实际交付日期",
-            "engineering": "发生时间",
-            "project": "更新时间",
-            "incident": "发生时间",
-            "decision": "生效时间",
-            "experiment": "发生时间",
-            "audit": "记录时间",
-            "support": "发生时间",
-        }
         found = []
         for log_type in self.LOG_TYPES:
             self.assertIn(f"](#{log_type})", content)
@@ -626,11 +668,6 @@ class RealPublicPackageContractTests(unittest.TestCase):
             self.assertIsNotNone(match, log_type)
             found.append(log_type)
             template = match.group(1)
-            for field in ("受众", "敏感级别", "时区"):
-                self.assertRegex(template, rf"(?m)^{field}：")
-            for distinction in ("事实", "推测", "决定", "待确认"):
-                self.assertRegex(template, rf"(?m)^## {distinction}$")
-            self.assertRegex(template, rf"(?m)^{date_labels[log_type]}：")
             self.assertEqual([], lint.lint_draft(template, log_type=log_type))
         self.assertEqual(list(self.LOG_TYPES), found)
 

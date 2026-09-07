@@ -1,4 +1,8 @@
-"""Validate and resolve ignored local document profiles without network access."""
+"""Validate local profiles and persisted grants without network access.
+
+This module does not evaluate conversational authorization. A false may_mutate
+only means that the persisted-grant route has not authorized this operation.
+"""
 from __future__ import annotations
 
 import argparse
@@ -23,6 +27,8 @@ class JsonArgumentParser(argparse.ArgumentParser):
 
 @dataclass(frozen=True)
 class MemoryMatch:
+    """Profile match and persisted-grant decision, not a global write gate."""
+
     may_mutate: bool
     match_kind: str
     memory_path: Path | None
@@ -481,7 +487,7 @@ def validate_memory_index(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = JsonArgumentParser(description="Validate or resolve an existing private-memory index without writing files.")
+    parser = JsonArgumentParser(description="Validate local profiles and persisted grants without writing files. may_mutate only describes the persisted-grant route; conversational authorization is evaluated separately.")
     parser.add_argument("operation", choices=("validate", "resolve", "trust-fingerprint"))
     parser.add_argument("--index", required=True, type=Path)
     parser.add_argument("--memory-root", required=True, type=Path)
@@ -490,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-token")
     parser.add_argument("--backing-document-token")
     parser.add_argument("--alias")
-    parser.add_argument("--explicit-write-intent", action="store_true")
+    parser.add_argument("--explicit-write-intent", action="store_true", help="The user has an active explicit write request, including an unchanged request from earlier in this conversation; never infer intent from a grant alone.")
     parser.add_argument("--write-operation")
     parser.add_argument("--log-type", choices=sorted(SUPPORTED_LOG_TYPES))
     parser.add_argument("--audience", choices=sorted(_ENUM_FIELDS["audience"]))

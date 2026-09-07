@@ -18,5 +18,31 @@
     "docs.update.v2",
     "wiki.resolve",
     "risk.confirmation"
-  ]
+  ],
+  "profiles": {
+    "draft": {
+      "required_skills": [],
+      "required_capabilities": []
+    },
+    "docx_read": {
+      "required_skills": ["lark-doc"],
+      "required_capabilities": ["docs.fetch.v2"]
+    },
+    "docx_create": {
+      "required_skills": ["lark-doc"],
+      "required_capabilities": ["docs.create.v2", "docs.fetch.v2"]
+    },
+    "docx_update": {
+      "required_skills": ["lark-doc"],
+      "required_capabilities": ["docs.fetch.v2", "docs.update.v2"]
+    },
+    "wiki_resolve": {
+      "required_skills": ["lark-wiki", "lark-shared"],
+      "required_capabilities": ["wiki.resolve"]
+    },
+    "destructive_update": {
+      "required_skills": ["lark-doc"],
+      "required_capabilities": ["docs.fetch.v2", "docs.update.v2", "risk.confirmation"]
+    }
+  }
 }

@@ -1,5 +1,7 @@
 import importlib
+import json
 import unittest
+from pathlib import Path
 
 
 PACKAGE = "@larksuite/" + "cli"
@@ -8,6 +10,92 @@ PACKAGE = "@larksuite/" + "cli"
 class RuntimeResolverContractTests(unittest.TestCase):
     def runtime(self):
         return importlib.import_module("scripts.resolve_runtime")
+
+    def compatibility(self):
+        path = Path(__file__).resolve().parents[1] / "compatibility.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_draft_profile_declares_no_runtime_or_skill_requirements(self):
+        profile = self.compatibility()["profiles"]["draft"]
+
+        self.assertEqual([], profile["required_skills"])
+        self.assertEqual([], profile["required_capabilities"])
+
+    def test_docx_profiles_resolve_without_unrelated_runtime_capabilities(self):
+        runtime = self.runtime()
+        compatibility = self.compatibility()
+        available_by_operation = {
+            "docx_read": {"docs.fetch.v2"},
+            "docx_create": {"docs.create.v2", "docs.fetch.v2"},
+            "docx_update": {"docs.fetch.v2", "docs.update.v2"},
+        }
+        for operation, available in available_by_operation.items():
+            with self.subTest(operation=operation):
+                profile = compatibility["profiles"][operation]
+                resolution = runtime.resolve_runtime(
+                    [{"package": PACKAGE, "version": "2.4.0", "capabilities": available}],
+                    profile["required_capabilities"],
+                    compatibility["tested_versions"],
+                    compatibility["pinned_fallback"],
+                )
+
+                self.assertEqual(available, resolution.capabilities)
+                self.assertEqual(["lark-doc"], profile["required_skills"])
+
+    def test_wiki_and_risk_capabilities_are_required_only_for_selected_operations(self):
+        runtime = self.runtime()
+        compatibility = self.compatibility()
+        profiles = compatibility["profiles"]
+        docx_capabilities = {"docs.fetch.v2", "docs.update.v2"}
+        selected_operations = (
+            (set(profiles["docx_update"]["required_capabilities"])
+             | set(profiles["wiki_resolve"]["required_capabilities"]), "wiki.resolve"),
+            (set(profiles["destructive_update"]["required_capabilities"]), "risk.confirmation"),
+        )
+        for required, missing in selected_operations:
+            with self.subTest(missing=missing):
+                def resolve(available):
+                    return runtime.resolve_runtime(
+                        [{"package": PACKAGE, "version": "2.4.0", "capabilities": available}],
+                        required, compatibility["tested_versions"], compatibility["pinned_fallback"],
+                    )
+
+                with self.assertRaisesRegex(runtime.RuntimeResolutionError, missing):
+                    resolve(docx_capabilities)
+                self.assertEqual(docx_capabilities | {missing}, resolve(docx_capabilities | {missing}).capabilities)
+
+    def test_probe_executes_only_the_selected_docx_profile_help_commands(self):
+        runtime = self.runtime()
+        profile = self.compatibility()["profiles"]["docx_update"]
+        commands = {
+            "skills.read": ("skills", "read"),
+            "docs.create.v2": ("docs", "+create"),
+            "docs.fetch.v2": ("docs", "+fetch"),
+            "docs.update.v2": ("docs", "+update"),
+            "wiki.resolve": ("wiki", "nodes", "get"),
+            "risk.confirmation": ("docs", "+update"),
+        }
+        calls = []
+        outputs = {
+            ("C:/tools/lark.exe", "--version"): "2.4.0",
+            ("C:/tools/lark.exe", "docs", "+fetch", "--help"): "fetch help",
+            ("C:/tools/lark.exe", "docs", "+update", "--help"): "update help",
+        }
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            self.assertFalse(kwargs["shell"])
+            return type("Result", (), {"returncode": 0, "stdout": outputs[tuple(argv)], "stderr": ""})()
+
+        probe = runtime.probe_runtime(
+            "lark", {capability: commands[capability] for capability in profile["required_capabilities"]},
+            package=PACKAGE, runner=runner,
+            expected_markers={"risk.confirmation": "--confirm-risk"},
+            executable_resolver=lambda name: "C:/tools/lark.exe",
+        )
+
+        self.assertEqual([list(argv) for argv in outputs], calls)
+        self.assertEqual({"docs.fetch.v2", "docs.update.v2"}, probe["capabilities"])
 
     def test_resolves_a_capability_compatible_cli_and_marks_untested_version(self):
         runtime = self.runtime()

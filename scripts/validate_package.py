@@ -65,7 +65,33 @@ def _valid_compatibility(path: Path) -> bool:
     tested = data.get("tested_versions")
     skills = data.get("required_skills")
     capabilities = data.get("required_capabilities")
-    return isinstance(package, str) and bool(re.fullmatch(r"@[a-z0-9-]+/[a-z0-9-]+", package, re.I)) and _pinned_for_package(data.get("pinned_fallback"), package) and all(isinstance(value, list) and value and all(isinstance(item, str) and item for item in value) for value in (tested, skills, capabilities)) and all(re.fullmatch(r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?", item) for item in tested)
+    if not (
+        isinstance(package, str)
+        and re.fullmatch(r"@[a-z0-9-]+/[a-z0-9-]+", package, re.I)
+        and _pinned_for_package(data.get("pinned_fallback"), package)
+        and all(
+            isinstance(value, list) and value
+            and all(isinstance(item, str) and item for item in value)
+            for value in (tested, skills, capabilities)
+        )
+        and all(re.fullmatch(r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.-]+)?", item) for item in tested)
+    ):
+        return False
+    if "profiles" not in data:
+        return True
+    profiles = data["profiles"]
+    if not isinstance(profiles, dict) or not profiles:
+        return False
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(profile, dict):
+            return False
+        for field, complete_set in (("required_skills", skills), ("required_capabilities", capabilities)):
+            selected = profile.get(field)
+            if not isinstance(selected, list) or not all(isinstance(item, str) and item for item in selected):
+                return False
+            if not set(selected) <= set(complete_set):
+                return False
+    return True
 
 
 def _is_allowed_path(relative: Path) -> bool:

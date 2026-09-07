@@ -36,9 +36,11 @@ Docx profile 不使用 Wiki 节点字段；Wiki-backed Docx profile 同时记录
 - `log_types`、`audiences`：不得超出对应 profile；
 - `authorized_at`、`expires_at`、`revoked_at`：带显式时区的 ISO 8601；后两者可为 `null`。
 
-使用 `scripts/private_memory.py trust-fingerprint` 为实时精确目标生成摘要。Wiki 目标必须先实时解析节点，并向 `trust-fingerprint` 和 `resolve` 传入 `--backing-document-token`；缺少或不匹配都不得写入。信任文件存在时，`validate` 和 `resolve` 会自动校验它；未知字段、重复 profile、目标漂移、破坏性操作、身份或内容范围扩大都使授权无效。
+使用 `scripts/private_memory.py trust-fingerprint` 为实时精确目标生成摘要。复用 Wiki 信任时必须先实时解析节点，并向 `trust-fingerprint` 和 `resolve` 传入 `--backing-document-token`；缺少或不匹配时不能依据该记录写入。信任文件存在时，`validate` 和 `resolve` 会自动校验它；未知字段、重复 profile、目标漂移、破坏性操作、身份或内容范围扩大都使该持久信任路径无效。
 
-信任标识只消除重复确认，不创建写入意图。只有本轮用户明确要求云端写入，并且 `resolve` 同时收到 `--explicit-write-intent`、精确 URL/token、Wiki 的实时底层 Docx token（如适用）、`--write-operation`、`--log-type`、`--audience` 和 `--identity user`，返回 `may_mutate=true` 与 `trust_status=trusted` 后，才可直接执行普通追加。
+信任标识不创建写入意图。复用持久信任时，`resolve` 同时接收 `--explicit-write-intent`、精确 URL/token、Wiki 实时底层 Docx token（如适用）、`--write-operation`、`--log-type`、`--audience` 和 `--identity user`；操作参数必须与最终执行动作相同，不能把文末 `append` 的结果用于锚点后 `block_insert_after`。返回 `may_mutate=true` 与 `trust_status=trusted` 表示本次请求满足该 grant。明确写入意图可以来自同一会话中仍有效的用户要求，不局限于最近一条消息。
+
+解析器只检查持久信任，不解释会话授权。`may_mutate=false` 或档案读取错误不能单独判定所有写入都未授权。用户已明确授权实时目标与普通追加范围时，可在没有 profile 或有效 grant 的情况下继续，不创建或修改 `.local/`。缺失、过期或撤销的 grant 不支持历史授权复用；目标漂移或范围变化仍须澄清，不能把旧授权套用到新目标。完整执行条件见执行与安全参考。
 
 ## 禁止内容
 

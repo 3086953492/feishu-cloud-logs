@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 SUPPORTED_LOG_TYPES = ("release", "engineering", "project", "incident", "decision", "experiment", "audit", "support")
+SUPPORTED_PROFILES = ("full", "append")
 REQUIRED_FIELDS = {
     "release": (
         ("actual_delivery", "actual delivery", "actual_delivery_date", "actual delivery date", "实际交付", "实际交付日期"),
@@ -86,6 +87,7 @@ DATE_FIELDS = {
     "experiment": ("occurred_at", "recorded_at", "发生时间", "记录时间"),
     "support": ("occurred_at", "updated_at", "发生时间", "更新时间"),
 }
+ALL_DATE_FIELDS = {alias for aliases in DATE_FIELDS.values() for alias in aliases}
 
 _OBVIOUS_SECRET = re.compile(
     r"\b(?:sk|pk)-[A-Za-z0-9_-]{16,}\b"
@@ -176,9 +178,11 @@ def _valid_timezone_value(value: str) -> bool:
     return True
 
 
-def lint_draft(draft: str, *, log_type: str) -> list[Issue]:
+def lint_draft(draft: str, *, log_type: str, profile: str = "full") -> list[Issue]:
     if log_type not in SUPPORTED_LOG_TYPES:
         raise ValueError("unsupported log type: " + log_type)
+    if profile not in SUPPORTED_PROFILES:
+        raise ValueError("unsupported lint profile: " + profile)
     issues: list[Issue] = []
     def add(code: str, message: str) -> None:
         if code not in {issue.code for issue in issues}:
@@ -186,21 +190,24 @@ def lint_draft(draft: str, *, log_type: str) -> list[Issue]:
 
     fields = _fields(draft)
     labels = set(fields)
-    groups = REQUIRED_FIELDS[log_type]
-    missing = [group for group in groups if not labels.intersection(alias.lower() for alias in group)]
-    if missing:
-        add("missing_required_field", "This log type is missing required planning fields.")
-    date_values = _matching_values(fields, DATE_FIELDS[log_type])
-    if not date_values:
-        add("missing_date", "The type-specific applicable date is required.")
-    elif not any(_valid_date_value(value) for value in date_values):
-        add("invalid_date", "The type-specific applicable date must be ISO 8601 or explicitly unknown.")
+    if profile == "full":
+        groups = REQUIRED_FIELDS[log_type]
+        missing = [group for group in groups if not labels.intersection(alias.lower() for alias in group)]
+        if missing:
+            add("missing_required_field", "This log type is missing required planning fields.")
+        if not _matching_values(fields, DATE_FIELDS[log_type]):
+            add("missing_date", "The type-specific applicable date is required.")
+    elif not draft.strip():
+        add("empty_draft", "An appended log entry must contain text.")
+    date_values = _matching_values(fields, ALL_DATE_FIELDS)
+    if any(not _valid_date_value(value) for value in date_values):
+        add("invalid_date", "Every explicit date field must be ISO 8601 or explicitly unknown.")
     timezone_aliases = {"timezone", "time zone", "时区"}
     timezone_values = _matching_values(fields, timezone_aliases)
-    if not timezone_values:
+    if not timezone_values and profile == "full":
         add("missing_timezone", "An IANA timezone is required.")
-    elif not any(_valid_timezone_value(value) for value in timezone_values):
-        add("invalid_timezone", "Timezone must contain a valid IANA zone.")
+    if any(not _valid_timezone_value(value) for value in timezone_values):
+        add("invalid_timezone", "Every explicit timezone field must contain a valid IANA zone.")
     previous = 0
     for match in re.finditer(r"(?m)^(#{1,6})\s+", draft):
         level = len(match.group(1))
@@ -262,10 +269,11 @@ def lint_draft(draft: str, *, log_type: str) -> list[Issue]:
 def main(argv: list[str] | None = None) -> int:
     parser = JsonArgumentParser(description="Lint a Feishu cloud-log draft without network access.")
     parser.add_argument("--log-type", required=True, choices=SUPPORTED_LOG_TYPES)
+    parser.add_argument("--profile", choices=SUPPORTED_PROFILES, default="full", help="Use append for a fragment within an existing log; full requires a complete record.")
     parser.add_argument("--file", required=True, type=Path)
     try:
         args = parser.parse_args(argv)
-        issues = lint_draft(args.file.read_text(encoding="utf-8"), log_type=args.log_type)
+        issues = lint_draft(args.file.read_text(encoding="utf-8"), log_type=args.log_type, profile=args.profile)
     except (OSError, UnicodeError, TypeError, ValueError) as error:
         print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
         return 2

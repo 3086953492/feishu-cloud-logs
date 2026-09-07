@@ -1,5 +1,10 @@
 import importlib
+import io
+import json
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 
 
 class DraftLintContractTests(unittest.TestCase):
@@ -106,10 +111,18 @@ class DraftLintContractTests(unittest.TestCase):
         fields = [aliases[language_index][0] for aliases in self.APPROVED_FIELDS[log_type]]
         for index, alias in (aliases_by_index or {}).items():
             fields[index] = alias
+        date_fields = {
+            alias
+            for language_aliases in self.DATE_FIELDS.values()
+            for aliases in language_aliases
+            for alias in aliases
+        }
         sections = [
             (
                 field,
-                timezone_value
+                date_value
+                if field in date_fields
+                else timezone_value
                 if log_type == "incident" and index == 2
                 else "Recorded.",
             )
@@ -545,6 +558,167 @@ class DraftLintContractTests(unittest.TestCase):
             log_type="project",
         )
         self.assertTrue({"incomplete_visual_context", "missing_whiteboard_text"} <= self.issue_codes(issues))
+
+    def test_default_profile_preserves_full_record_requirements(self):
+        lint = self.lint_module()
+        for log_type in lint.SUPPORTED_LOG_TYPES:
+            for draft in (self.complete_draft(log_type), "### 分类显示\n\n优化了分类图标显示。"):
+                with self.subTest(log_type=log_type, draft=draft):
+                    self.assertEqual(
+                        lint.lint_draft(draft, log_type=log_type),
+                        lint.lint_draft(draft, log_type=log_type, profile="full"),
+                    )
+
+    def test_append_accepts_a_short_fragment_without_repeating_document_metadata(self):
+        lint = self.lint_module()
+        draft = "### 分类显示\n\n优化了分类图标显示；缺少图标时保留原有封面回退。"
+        for log_type in lint.SUPPORTED_LOG_TYPES:
+            with self.subTest(log_type=log_type):
+                self.assertEqual([], lint.lint_draft(draft, log_type=log_type, profile="append"))
+                self.assertTrue(
+                    {"missing_required_field", "missing_date", "missing_timezone"}
+                    <= self.issue_codes(lint.lint_draft(draft, log_type=log_type))
+                )
+
+    def test_append_rejects_empty_or_whitespace_only_text(self):
+        lint = self.lint_module()
+        for draft in ("", " \t\r\n"):
+            with self.subTest(draft=draft):
+                self.assertEqual(
+                    {"empty_draft"},
+                    self.issue_codes(lint.lint_draft(draft, log_type="release", profile="append")),
+                )
+
+    def test_append_does_not_infer_metadata_from_dates_or_prose(self):
+        lint = self.lint_module()
+        draft = (
+            "## 2026-09-07\n\n分类显示优化。发布时间尚待确认，沿用原章节日期口径。\n\n"
+            "Date: this is an ordinary section label\n\n日期：尚待核验\n\n"
+            "The recorded_at value will be checked separately."
+        )
+        self.assertEqual([], lint.lint_draft(draft, log_type="release", profile="append"))
+
+    def test_all_known_explicit_dates_are_checked_for_every_type_and_profile(self):
+        lint = self.lint_module()
+        aliases = {
+            alias
+            for language_aliases in self.DATE_FIELDS.values()
+            for date_aliases in language_aliases
+            for alias in date_aliases
+        }
+        for profile in ("full", "append"):
+            for log_type in lint.SUPPORTED_LOG_TYPES:
+                base = self.complete_draft(log_type) if profile == "full" else "分类显示优化。"
+                for alias in aliases:
+                    for field in (f"{alias}: tomorrow", f"## {alias}\n\ntomorrow"):
+                        with self.subTest(profile=profile, log_type=log_type, field=field):
+                            codes = self.issue_codes(lint.lint_draft(
+                                base + "\n\n" + field, log_type=log_type, profile=profile,
+                            ))
+                            self.assertIn("invalid_date", codes)
+
+    def test_valid_or_unknown_dates_do_not_mask_an_invalid_explicit_date(self):
+        lint = self.lint_module()
+        for profile in ("full", "append"):
+            base = self.complete_draft("release") if profile == "full" else "分类显示优化。"
+            for valid_value in ("2026-09-07", "unknown", "待确认"):
+                for invalid_value in ("", "2026-99-99"):
+                    fields = [f"recorded_at: {valid_value}", f"recorded_at: {invalid_value}"]
+                    for ordered_fields in (fields, fields[::-1]):
+                        with self.subTest(profile=profile, fields=ordered_fields):
+                            codes = self.issue_codes(lint.lint_draft(
+                                base + "\n\n" + "\n".join(ordered_fields),
+                                log_type="release", profile=profile,
+                            ))
+                            self.assertIn("invalid_date", codes)
+
+    def test_every_explicit_timezone_is_checked_in_both_profiles(self):
+        lint = self.lint_module()
+        for profile in ("full", "append"):
+            base = self.complete_draft("release") if profile == "full" else "分类显示优化。"
+            for alias in ("timezone", "time zone", "时区"):
+                for invalid_value in ("", "Mars/Olympus_Mons"):
+                    fields = [f"{alias}: UTC", f"{alias}: {invalid_value}"]
+                    for ordered_fields in (fields, fields[::-1]):
+                        with self.subTest(profile=profile, fields=ordered_fields):
+                            codes = self.issue_codes(lint.lint_draft(
+                                base + "\n\n" + "\n".join(ordered_fields),
+                                log_type="release", profile=profile,
+                            ))
+                            self.assertIn("invalid_timezone", codes)
+
+    def test_append_accepts_valid_explicit_time_metadata(self):
+        lint = self.lint_module()
+        for value in ("2026-09-07", "2026-09-07T12:00:00+08:00", "unknown", "待确认"):
+            with self.subTest(value=value):
+                self.assertEqual([], lint.lint_draft(
+                    f"分类显示优化。\n\n记录时间：{value}\n时区：Asia/Shanghai",
+                    log_type="release", profile="append",
+                ))
+
+    def test_append_keeps_shared_content_and_visual_checks(self):
+        lint = self.lint_module()
+        cases = {
+            "heading_level_jump": "# Log\n\n### Change\n\nRecorded.",
+            "color_only_status": "\U0001f7e2",
+            "internal_implementation_leak": "Customer update: changed the internal /admin endpoint.",
+            "unsupported_significance_claim": "结果显著提升。",
+            "obvious_secret": "pass" + "word=x",
+            "possible_pii": "Contact person@example.com.",
+            "missing_visual_caption": "![](photo.png)",
+            "wide_table": "|a|b|c|d|e|f|g|",
+            "incomplete_visual_context": "![Trend](chart.png)",
+            "missing_whiteboard_text": "Whiteboard: [diagram](board-link)",
+        }
+        for code, fragment in cases.items():
+            with self.subTest(code=code):
+                self.assertIn(code, self.issue_codes(lint.lint_draft(
+                    fragment, log_type="release", profile="append",
+                )))
+
+    def test_append_keeps_sensitive_history_checks(self):
+        lint = self.lint_module()
+        for log_type in ("incident", "audit", "decision"):
+            with self.subTest(log_type=log_type):
+                self.assertIn("silent_history_rewrite", self.issue_codes(lint.lint_draft(
+                    "We rewrote the earlier entry so the previous record is no longer visible.",
+                    log_type=log_type, profile="append",
+                )))
+
+    def test_rejects_an_unsupported_profile(self):
+        lint = self.lint_module()
+        with self.assertRaisesRegex(ValueError, "unsupported lint profile"):
+            lint.lint_draft("分类显示优化。", log_type="release", profile="quick")
+
+    def test_cli_profiles_preserve_json_and_exit_code_contracts(self):
+        lint = self.lint_module()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "draft.md"
+            base_args = ["--log-type", "release", "--file", str(path)]
+            cases = (
+                (self.complete_draft("release"), [], 0),
+                (self.complete_draft("release"), ["--profile", "full"], 0),
+                ("分类显示优化。", [], 1),
+                ("分类显示优化。", ["--profile", "full"], 1),
+                ("分类显示优化。", ["--profile", "append"], 0),
+                (" ", ["--profile", "append"], 1),
+                ("分类显示优化。", ["--profile", "quick"], 2),
+            )
+            for draft, options, expected_status in cases:
+                with self.subTest(draft=draft, options=options):
+                    path.write_text(draft, encoding="utf-8")
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        status = lint.main(base_args + options)
+                    result = json.loads(output.getvalue())
+                    self.assertEqual(expected_status, status)
+                    self.assertEqual(expected_status == 0, result["ok"])
+                    self.assertEqual(
+                        {"ok", "error"} if expected_status == 2 else {"ok", "issues"},
+                        set(result),
+                    )
+                    for issue in result.get("issues", []):
+                        self.assertEqual({"code", "message"}, set(issue))
 
 
 if __name__ == "__main__":
